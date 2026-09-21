@@ -24,6 +24,7 @@
 "Grant Full Disk Access" = "Предоставьте полный доступ к диску";
 "%lld item(s) need Full Disk Access" = "Требуется полный доступ к диску · объектов: %lld";
 "Uninstalling %@: %lld file(s) need Full Disk Access" = "Удаление %@: полный доступ нужен для файлов (%lld)";
+"Uninstalling %lld apps: %lld file(s) need Full Disk Access" = "Uninstalling %lld apps: %lld file(s) need Full Disk Access";
 "%lld item(s) need Full Disk Access to remove. Tap Grant Access to fix in one step." = "Для удаления нужен полный доступ к диску. Объектов: %lld. Нажмите «Предоставить доступ», чтобы всё исправить за один шаг.";
 "Couldn't remove %@%@. They may be in use or protected by macOS." = "Не удалось удалить %@%@. Возможно, они используются или защищены macOS.";
 " and %lld more" = " и ещё %lld";
@@ -145,6 +146,7 @@
 /* App Files (AppFilesView) */
 "%lld files" = "Файлов: %lld";
 "Scanning for related files..." = "Поиск связанных файлов…";
+"Scanning %lld of %lld apps..." = "Scanning %lld of %lld apps...";
 "Checking %lld locations..." = "Проверка расположений (%lld)…";
 "No Related Files" = "Связанные файлы не найдены";
 "No additional files found for %@." = "Дополнительные файлы для %@ не найдены.";

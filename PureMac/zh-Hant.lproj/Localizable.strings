@@ -104,6 +104,7 @@
 /* App Files (AppFilesView) */
 "%lld files" = "%lld 個檔案";
 "Scanning for related files..." = "正在掃描相關檔案...";
+"Scanning %lld of %lld apps..." = "Scanning %lld of %lld apps...";
 "Checking %lld locations..." = "正在檢查 %lld 個位置...";
 "No Related Files" = "沒有相關檔案";
 "No additional files found for %@." = "找不到 %@ 的額外檔案。";
@@ -294,6 +295,7 @@
 "Grant Full Disk Access" = "授予完整磁碟存取權限";
 "%lld item(s) need Full Disk Access" = "%lld 個項目需要完整磁碟存取權限";
 "Uninstalling %@: %lld file(s) need Full Disk Access" = "解除安裝 %@：%lld 個檔案需要完整磁碟存取權限";
+"Uninstalling %lld apps: %lld file(s) need Full Disk Access" = "Uninstalling %lld apps: %lld file(s) need Full Disk Access";
 "%lld item(s) need Full Disk Access to remove. Tap Grant Access to fix in one step." = "%lld 個項目需要完整磁碟存取權限才能移除。輕點「授予存取權限」一步解決。";
 "Couldn't remove %@%@. They may be in use or protected by macOS." = "無法移除 %@%@。它們可能正在使用或受 macOS 保護。";
 " and %lld more" = " 還有 %lld 個";

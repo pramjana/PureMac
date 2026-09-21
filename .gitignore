@@ -52,3 +52,6 @@ _work/
 
 # Local handoff notes (never committed)
 HANDOFF.md
+
+# Maestri
+.maestri/

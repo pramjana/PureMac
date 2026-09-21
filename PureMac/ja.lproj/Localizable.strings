@@ -104,6 +104,7 @@
 /* App Files (AppFilesView) */
 "%lld files" = "%lld ファイル";
 "Scanning for related files..." = "関連ファイルをスキャン中...";
+"Scanning %lld of %lld apps..." = "Scanning %lld of %lld apps...";
 "Checking %lld locations..." = "%lld 個の場所を確認中...";
 "No Related Files" = "関連ファイルがありません";
 "No additional files found for %@." = "%@ の追加ファイルは見つかりませんでした。";
@@ -294,6 +295,7 @@
 "Grant Full Disk Access" = "フルディスクアクセスを付与";
 "%lld item(s) need Full Disk Access" = "%lld 件にフルディスクアクセスが必要です";
 "Uninstalling %@: %lld file(s) need Full Disk Access" = "%@ のアンインストール: %lld 個のファイルにフルディスクアクセスが必要です";
+"Uninstalling %lld apps: %lld file(s) need Full Disk Access" = "Uninstalling %lld apps: %lld file(s) need Full Disk Access";
 "%lld item(s) need Full Disk Access to remove. Tap Grant Access to fix in one step." = "%lld 件の削除にはフルディスクアクセスが必要です。「アクセスを許可」をタップすると一手で解決します。";
 "Couldn't remove %@%@. They may be in use or protected by macOS." = "%@%@ を削除できませんでした。使用中か macOS によって保護されている可能性があります。";
 " and %lld more" = " 他 %lld 件";

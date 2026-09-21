@@ -3,7 +3,7 @@ import SwiftUI
 struct AppListView: View {
     @EnvironmentObject var appState: AppState
     @State private var searchText = ""
-    @State private var selection: InstalledApp.ID?
+    @State private var selection: Set<InstalledApp.ID> = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sortOrder: [KeyPathComparator<InstalledApp>] = [
         .init(\.appName, order: .forward)
@@ -100,27 +100,25 @@ struct AppListView: View {
                     }
                     .width(ideal: 70)
                 }
-                .onChange(of: selection) { newValue in
-                    guard let id = newValue,
-                          let app = appState.installedApps.first(where: { $0.id == id })
-                    else { return }
-                    // Skip when the selection was just synced from an external
-                    // (Finder Services) hand-off that already scanned this app,
-                    // so we don't fire a redundant second scan.
-                    guard appState.selectedApp?.id != app.id else { return }
-                    appState.selectedApp = app
-                    appState.scanForAppFiles(app)
+                .onChange(of: selection) { newSelection in
+                    let selectedApps = appState.installedApps.filter { newSelection.contains($0.id) }
+                    appState.selectApps(selectedApps)
                 }
-                .onChange(of: appState.selectedApp) { app in
-                    // Reflect an externally-driven selection (Finder Services)
-                    // in the table highlight.
-                    if selection != app?.id { selection = app?.id }
+                .onChange(of: appState.selectedAppBundleIDs) { newBundleIDs in
+                    let mappedIDs = Set(appState.installedApps.filter { newBundleIDs.contains($0.bundleIdentifier) }.map(\.id))
+                    if selection != mappedIDs { selection = mappedIDs }
+                }
+                .onChange(of: appState.installedApps) { apps in
+                    // Refresh produces new UUIDs: remap highlight from stable bundleIDs
+                    let mappedIDs = Set(apps.filter { appState.selectedAppBundleIDs.contains($0.bundleIdentifier) }.map(\.id))
+                    if selection != mappedIDs { selection = mappedIDs }
                 }
                 .onAppear {
                     // Sync the highlight when this view mounts already pointed
-                    // at an externally-selected app.
-                    if selection != appState.selectedApp?.id {
-                        selection = appState.selectedApp?.id
+                    // at externally-selected apps.
+                    let mappedIDs = Set(appState.installedApps.filter { appState.selectedAppBundleIDs.contains($0.bundleIdentifier) }.map(\.id))
+                    if selection != mappedIDs {
+                        selection = mappedIDs
                     }
                 }
             }
@@ -131,13 +129,13 @@ struct AppListView: View {
 
     @ViewBuilder
     private var fileDetail: some View {
-        if let app = appState.selectedApp {
-            AppFilesView(app: app)
+        if !appState.selectedAppBundleIDs.isEmpty {
+            AppFilesView()
         } else {
             EmptyStateView(
                 "Select an App",
                 systemImage: "cursorarrow.click.2",
-                description: "Select an app from the list to see all its related files across your system.",
+                description: "Select one or more apps from the list to see related files across your system.",
                 tint: Tint.purple
             )
         }

@@ -95,11 +95,26 @@ final class AppState: ObservableObject {
     /// to re-select anything.
     @Published var pendingPermissionRetryItems: [CleanableItem] = []
 
-    // MARK: - App Uninstaller State
+    // MARK: - Multi-Select App Uninstaller State
 
     @Published var installedApps: [InstalledApp] = []
     @Published var selectedApp: InstalledApp?
-    @Published var discoveredFiles: [URL] = []
+
+    /// Source of truth for selected apps, keyed by bundle identifier. Stable across list reloads.
+    @Published var selectedAppBundleIDs: Set<String> = []
+
+    /// In-memory cache of app metadata (icon, name, size, path) for section headers and Finder hand-offs.
+    private(set) var selectedAppSnapshots: [String: InstalledApp] = [:]
+
+    /// Discovered leftover files partitioned by app bundle identifier.
+    @Published var discoveredFilesByApp: [String: [URL]] = [:]
+
+    /// Computed sorted union of all discovered leftover files across all currently selected apps.
+    var discoveredFiles: [URL] {
+        let allURLs = discoveredFilesByApp.values.flatMap { $0 }
+        return Array(Set(allURLs)).sorted { $0.path < $1.path }
+    }
+
     @Published var selectedFiles: Set<URL> = []
     @Published var orphanedFiles: [URL] = []
     @Published var isSearchingOrphans: Bool = false
@@ -114,6 +129,17 @@ final class AppState: ObservableObject {
     /// different app or mutates selection while the FDA sheet is open.
     @Published var lastFailedRemovalURLs: [URL] = []
     @Published var appFileScanLocationCount: Int = 0
+
+    /// Progress indicators for multi-app scanning ("Scanning N of M apps...").
+    @Published var scansCompleted: Int = 0
+    @Published var scansTotal: Int = 0
+
+    /// App names associated with the most recent permission (FDA) failure, frozen at finishRemoval.
+    @Published var lastFailedRemovalAppNames: [String] = []
+
+    /// Bundle ID of the app currently undergoing active scanning (nil if idle).
+    @Published private(set) var currentlyScanningBundleID: String?
+
     /// Set when a right-clicked app arrives via the Finder Services handler.
     /// MainWindow consumes it on both onChange AND onAppear so a request that
     /// lands before MainWindow mounts (cold launch, or while onboarding is
@@ -121,7 +147,8 @@ final class AppState: ObservableObject {
     @Published var pendingExternalApp: InstalledApp?
 
     private var externalUninstallObserver: AnyCancellable?
-    private var appFileScanGeneration = UUID()
+    private var scanQueue: [String] = []
+    private var scanGenerations: [String: UUID] = [:]
 
     // MARK: - Services
 
@@ -246,24 +273,190 @@ final class AppState: ObservableObject {
     private func applyExternalUninstall(_ app: InstalledApp) {
         selectedApp = app
         pendingExternalApp = app
-        scanForAppFiles(app)
+        if selectedAppBundleIDs.contains(app.bundleIdentifier) {
+            scanForAppFiles(app)
+        } else {
+            selectApps([app])
+        }
     }
 
-    func scanForAppFiles(_ app: InstalledApp) {
-        discoveredFiles = []
-        selectedFiles = []
+    /// Set the multi-selection. Diffs incoming apps against current selection.
+    /// Dropped apps immediately lose files, selection, snapshots, and pending scans.
+    /// Newly added apps are sorted by name and appended to the sequential scan queue.
+    func selectApps(_ apps: [InstalledApp]) {
+        let incomingIDs = Set(apps.map(\.bundleIdentifier))
+        guard incomingIDs != selectedAppBundleIDs else { return }
+
+        let droppedIDs = selectedAppBundleIDs.subtracting(incomingIDs)
+        let addedApps = apps.filter { !selectedAppBundleIDs.contains($0.bundleIdentifier) }
+
+        // 1. Process dropped applications
+        for droppedID in droppedIDs {
+            dropApp(droppedID)
+        }
+
+        // 2. Process added applications
+        guard !addedApps.isEmpty else {
+            selectedApp = apps.first
+            return
+        }
+
+        // Cache snapshots
+        for app in addedApps {
+            selectedAppSnapshots[app.bundleIdentifier] = app
+            selectedAppBundleIDs.insert(app.bundleIdentifier)
+        }
+
+        // Sort added apps alphabetically by name to ensure deterministic scan order
+        let sortedAdded = addedApps.sorted { $0.appName.localizedStandardCompare($1.appName) == .orderedAscending }
+        let newQueueItems = sortedAdded.map(\.bundleIdentifier)
+
+        // Reset progress tracking for the new scan batch
+        scansTotal = scanQueue.count + newQueueItems.count
+        scansCompleted = 0
+        scanQueue.append(contentsOf: newQueueItems)
+
+        selectedApp = apps.first
+
+        // Start scanning if not already active
+        if !isScanningAppFiles {
+            startNextScan()
+        }
+    }
+
+    /// Drops an app by bundle identifier: purges files, deselects, removes snapshots, and invalidates tokens.
+    private func dropApp(_ bundleID: String) {
+        selectedAppBundleIDs.remove(bundleID)
+        selectedAppSnapshots.removeValue(forKey: bundleID)
+        scanGenerations.removeValue(forKey: bundleID)
+        scanQueue.removeAll { $0 == bundleID }
+        if let files = discoveredFilesByApp.removeValue(forKey: bundleID) {
+            selectedFiles.subtract(files)
+        }
+        if currentlyScanningBundleID == bundleID {
+            currentlyScanningBundleID = nil
+        }
+        if selectedApp?.bundleIdentifier == bundleID {
+            selectedApp = nil
+        }
+        if scanQueue.isEmpty && currentlyScanningBundleID == nil {
+            isScanningAppFiles = false
+            appFileScanLocationCount = 0
+        }
+    }
+
+    /// Advances the sequential scan queue. Invokes the injected appFileScanner.
+    private func startNextScan() {
+        guard !scanQueue.isEmpty else {
+            isScanningAppFiles = false
+            currentlyScanningBundleID = nil
+            appFileScanLocationCount = 0
+            return
+        }
+
+        let bundleID = scanQueue.removeFirst()
+        guard selectedAppBundleIDs.contains(bundleID),
+              let app = selectedAppSnapshots[bundleID] else {
+            startNextScan()
+            return
+        }
+
         isScanningAppFiles = true
+        currentlyScanningBundleID = bundleID
+
         let locations = locationsProvider()
         appFileScanLocationCount = locations.appSearch.paths.count
+
         let generation = UUID()
-        appFileScanGeneration = generation
+        scanGenerations[bundleID] = generation
+
         appFileScanner(app, locations) { [weak self] urls in
-            guard let self, self.appFileScanGeneration == generation else { return }
-            let sorted = urls.sorted { $0.path < $1.path }
-            self.discoveredFiles = sorted
-            self.selectedFiles = urls
-            self.isScanningAppFiles = false
-            self.appFileScanLocationCount = 0
+            let action = {
+                self?.handleScanCompletion(bundleID: bundleID, generation: generation, rawURLs: urls)
+            }
+            if Thread.isMainThread {
+                action()
+            } else {
+                Task { @MainActor in
+                    action()
+                }
+            }
+        }
+    }
+
+    /// Handles completion of an app scan: validates generation token, deduplicates against already-discovered URLs,
+    /// auto-selects new files, updates progress, and triggers startNextScan().
+    private func handleScanCompletion(bundleID: String, generation: UUID, rawURLs: Set<URL>) {
+        // Stale token or deselected check
+        guard selectedAppBundleIDs.contains(bundleID),
+              scanGenerations[bundleID] == generation else {
+            startNextScan()
+            return
+        }
+
+        // Deduplicate against already discovered URLs (first-scanned wins)
+        let alreadyDiscovered = Set(discoveredFilesByApp.values.flatMap { $0 })
+        let attributedURLs = rawURLs.subtracting(alreadyDiscovered)
+        let sortedURLs = attributedURLs.sorted { $0.path < $1.path }
+
+        discoveredFilesByApp[bundleID] = sortedURLs
+        selectedFiles.formUnion(attributedURLs)
+
+        scansCompleted += 1
+        startNextScan()
+    }
+
+    /// Force-rescan a single app in-place without disturbing other apps' discovered files.
+    /// Used by external Finder hand-offs and future row-level rescan triggers.
+    func scanForAppFiles(_ app: InstalledApp) {
+        let bundleID = app.bundleIdentifier
+        selectedAppSnapshots[bundleID] = app
+        selectedAppBundleIDs.insert(bundleID)
+        selectedApp = app
+
+        // Invalidate prior generation and existing file list for this app
+        let generation = UUID()
+        scanGenerations[bundleID] = generation
+        if let existing = discoveredFilesByApp[bundleID] {
+            selectedFiles.subtract(existing)
+        }
+        discoveredFilesByApp[bundleID] = []
+
+        // Ensure queue does not duplicate this bundleID
+        scanQueue.removeAll { $0 == bundleID }
+
+        isScanningAppFiles = true
+        currentlyScanningBundleID = bundleID
+        let locations = locationsProvider()
+        appFileScanLocationCount = locations.appSearch.paths.count
+
+        appFileScanner(app, locations) { [weak self] urls in
+            let action = {
+                guard let self,
+                      self.selectedAppBundleIDs.contains(bundleID),
+                      self.scanGenerations[bundleID] == generation else { return }
+
+                // Deduplicate against other apps' files
+                var otherDiscovered = Set<URL>()
+                for (id, files) in self.discoveredFilesByApp where id != bundleID {
+                    otherDiscovered.formUnion(files)
+                }
+                let attributed = urls.subtracting(otherDiscovered)
+                let sorted = attributed.sorted { $0.path < $1.path }
+
+                self.discoveredFilesByApp[bundleID] = sorted
+                self.selectedFiles.formUnion(attributed)
+                self.isScanningAppFiles = false
+                self.currentlyScanningBundleID = nil
+                self.appFileScanLocationCount = 0
+            }
+            if Thread.isMainThread {
+                action()
+            } else {
+                Task { @MainActor in
+                    action()
+                }
+            }
         }
     }
 
@@ -313,7 +506,7 @@ final class AppState: ObservableObject {
         }
         isRemovingAppFiles = true
         appFileTrasher(urls) { [weak self] removed, needsFullDiskAccess, needsAdmin, failed in
-            Task { @MainActor in
+            let processRemoval: @MainActor () async -> Void = {
                 guard let self else { return }
 
                 self.applyRemovedAppFiles(removed)
@@ -347,6 +540,22 @@ final class AppState: ObservableObject {
                     adminError: adminResult.errors.joined(separator: "; ")
                 )
             }
+
+            if Thread.isMainThread && needsAdmin.isEmpty {
+                guard let self else { return }
+                self.applyRemovedAppFiles(removed)
+                self.finishRemoval(
+                    removedAny: !removed.isEmpty,
+                    needsFullDiskAccess: needsFullDiskAccess,
+                    attemptedAdmin: false,
+                    failed: failed,
+                    adminError: nil
+                )
+            } else {
+                Task { @MainActor in
+                    await processRemoval()
+                }
+            }
         }
     }
 
@@ -371,7 +580,9 @@ final class AppState: ObservableObject {
                 } catch {
                     let nsError = error as NSError
                     if Self.isMissingFileError(nsError) {
-                        Logger.shared.log("Trash skipped for \(url.path): file no longer exists", level: .info)
+                        DispatchQueue.main.async {
+                            Logger.shared.log("Trash skipped for \(url.path): file no longer exists", level: .info)
+                        }
                         removed.append(url)
                     } else if Self.isPermissionDeniedError(nsError) {
                         if hasFullDiskAccess || Self.isLikelyAdministratorRemovalPath(url) {
@@ -381,7 +592,9 @@ final class AppState: ObservableObject {
                             failed.append(url)
                         }
                     } else {
-                        Logger.shared.log("Trash failed for \(url.path): \(error.localizedDescription)", level: .error)
+                        DispatchQueue.main.async {
+                            Logger.shared.log("Trash failed for \(url.path): \(error.localizedDescription)", level: .error)
+                        }
                         failed.append(url)
                     }
                 }
@@ -392,17 +605,22 @@ final class AppState: ObservableObject {
 
     private func applyRemovedAppFiles(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        // Animate the row sweep-out (AppFilesView attaches the per-row
-        // transitions). NSWorkspace is the Reduce Motion check available
-        // outside a View's Environment.
+        let urlSet = Set(urls)
+
+        let update = {
+            for bundleID in self.discoveredFilesByApp.keys {
+                self.discoveredFilesByApp[bundleID]?.removeAll { urlSet.contains($0) }
+            }
+            self.selectedFiles.subtract(urlSet)
+        }
+
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            discoveredFiles.removeAll { urls.contains($0) }
+            update()
         } else {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                discoveredFiles.removeAll { urls.contains($0) }
+                update()
             }
         }
-        selectedFiles.subtract(urls)
         Logger.shared.log("Removed \(urls.count) file\(urls.count == 1 ? "" : "s")", level: .info)
     }
 
@@ -418,6 +636,22 @@ final class AppState: ObservableObject {
         isRemovingAppFiles = false
         lastFailedRemovalURLs = needsFullDiskAccess ? failed : []
         removalNeedsFullDiskAccess = needsFullDiskAccess
+
+        if needsFullDiskAccess {
+            var failedNames = Set<String>()
+            let failedSet = Set(failed)
+            for (bundleID, urls) in discoveredFilesByApp {
+                if urls.contains(where: { failedSet.contains($0) }) {
+                    if let name = selectedAppSnapshots[bundleID]?.appName {
+                        failedNames.insert(name)
+                    }
+                }
+            }
+            lastFailedRemovalAppNames = failedNames.sorted()
+        } else {
+            lastFailedRemovalAppNames = []
+        }
+
         if let message = removalFailureMessage(
             needsFullDiskAccess: needsFullDiskAccess,
             attemptedAdmin: attemptedAdmin,
@@ -521,14 +755,18 @@ final class AppState: ObservableObject {
         return extensions.contains((path as NSString).pathExtension.lowercased())
     }
 
-    private func pruneMissingInstalledApps() {
+    func pruneMissingInstalledApps() {
         let fileManager = FileManager.default
         installedApps.removeAll { !fileManager.fileExists(atPath: $0.path.path) }
 
-        if let selectedApp, !fileManager.fileExists(atPath: selectedApp.path.path) {
-            self.selectedApp = nil
-            discoveredFiles = []
-            selectedFiles = []
+        for bundleID in selectedAppBundleIDs {
+            if let snapshot = selectedAppSnapshots[bundleID],
+               !fileManager.fileExists(atPath: snapshot.path.path) {
+                dropApp(bundleID)
+            }
+        }
+        if let current = selectedApp, !fileManager.fileExists(atPath: current.path.path) {
+            selectedApp = nil
         }
     }
 

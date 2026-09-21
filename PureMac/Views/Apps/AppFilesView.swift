@@ -56,10 +56,8 @@ enum LeftoverGroup: String, CaseIterable, Identifiable {
 
 struct AppFilesView: View {
     @EnvironmentObject var appState: AppState
-    let app: InstalledApp
 
-    @State private var collapsedGroups: Set<LeftoverGroup> = []
-    @State private var iconHovering = false
+    @State private var collapsedGroups: [String: Set<LeftoverGroup>] = [:]
     @State private var showBulkConfirmation = false
     @State private var pendingRemoval: Set<URL> = []
     /// One-pass size cache so group headers and the selected-size counter
@@ -67,43 +65,49 @@ struct AppFilesView: View {
     @State private var sizeCache: [URL: Int64] = [:]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var selectedApps: [InstalledApp] {
+        let snapshots = appState.selectedAppSnapshots
+        return appState.selectedAppBundleIDs.compactMap { bundleID in
+            snapshots[bundleID] ?? appState.installedApps.first { $0.bundleIdentifier == bundleID }
+        }.sorted { $0.appName.localizedStandardCompare($1.appName) == .orderedAscending }
+    }
+
     private var totalSelectedSize: Int64 {
         appState.selectedFiles.reduce(Int64(0)) { total, url in
             total + (cachedSize(url) ?? 0)
         }
     }
 
-    /// Discovered files bucketed for display, preserving the sorted order
-    /// inside each bucket. Only non-empty groups are shown.
-    private var groupedFiles: [(group: LeftoverGroup, urls: [URL])] {
-        let buckets = Dictionary(grouping: appState.discoveredFiles, by: LeftoverGroup.categorize)
+    private func groupedFiles(for urls: [URL]) -> [(group: LeftoverGroup, urls: [URL])] {
+        let buckets = Dictionary(grouping: urls, by: LeftoverGroup.categorize)
         return LeftoverGroup.allCases.compactMap { group in
-            guard let urls = buckets[group], !urls.isEmpty else { return nil }
-            return (group, urls)
+            guard let groupURLs = buckets[group], !groupURLs.isEmpty else { return nil }
+            return (group, groupURLs)
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 10)
-
-            // Content
-            if appState.isScanningAppFiles {
-                scanningState
-            } else if appState.discoveredFiles.isEmpty {
+            if selectedApps.isEmpty {
                 EmptyStateView(
-                    "No Related Files",
-                    systemImage: "checkmark.circle",
-                    description: LocalizedStringKey(
-                        String(format: String(localized: "No additional files found for %@."), app.appName)
-                    ),
-                    tint: Tint.green
+                    "Select an App",
+                    systemImage: "cursorarrow.click.2",
+                    description: "Select one or more apps from the list to see related files across your system.",
+                    tint: Tint.purple
                 )
             } else {
-                fileGroupsList
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        ForEach(selectedApps) { app in
+                            appSection(for: app)
+                        }
+
+                        if appState.isScanningAppFiles {
+                            scanningPlaceholderCard
+                        }
+                    }
+                    .padding(16)
+                }
 
                 actionBar
             }
@@ -133,20 +137,17 @@ struct AppFilesView: View {
             Text("PureMac will move the selected app and related files to the Trash. Items requiring administrator authorization may be permanently deleted. Review the selection before continuing.")
         }
         .onChange(of: appState.removalNeedsFullDiskAccess) { needs in
-            // FDA-fixable removals jump straight into the rich sheet, the
-            // same flow cleanup uses. The user grants permission once and we
-            // re-fire the failed batch — using the frozen snapshot from
-            // AppState so a mid-sheet selection change or app switch doesn't
-            // re-trash the wrong files.
             guard needs else { return }
             let toRetry = appState.lastFailedRemovalURLs
+            let names = appState.lastFailedRemovalAppNames
             let items = toRetry.map { appState.makeUninstallCleanableItem(for: $0) }
             appState.removalError = nil
             appState.removalNeedsFullDiskAccess = false
             appState.lastFailedRemovalURLs = []
+            appState.lastFailedRemovalAppNames = []
             appState.requestFullDiskAccessAndRetry(
                 items: items,
-                context: .uninstall(appName: app.appName, failedCount: items.count)
+                context: .uninstall(appNames: names, failedCount: items.count)
             )
         }
         .alert("Removal Failed", isPresented: Binding(
@@ -167,100 +168,164 @@ struct AppFilesView: View {
         }
     }
 
-    // MARK: - Header
+    // MARK: - App Section
 
-    private var header: some View {
-        CardSurface(padding: 16, tint: Tint.purple) {
-            HStack(spacing: 14) {
-                Image(nsImage: app.icon)
-                    .resizable()
-                    .frame(width: 52, height: 52)
-                    .shadow(color: .black.opacity(0.18), radius: 6, y: 3)
-                    .scaleEffect(iconHovering && !reduceMotion ? 1.06 : 1)
-                    .animation(reduceMotion ? nil : MotionTokens.snappy, value: iconHovering)
-                    .onHover { iconHovering = $0 }
+    private func appSection(for app: InstalledApp) -> some View {
+        let files = appState.discoveredFilesByApp[app.bundleIdentifier] ?? []
+        let appSize = files.reduce(Int64(0)) { $0 + (cachedSize($1) ?? 0) }
+        let isActivelyScanning = appState.isScanningAppFiles && appState.currentlyScanningBundleID == app.bundleIdentifier
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(app.appName)
-                        .font(.system(size: 17, weight: .bold))
-                    Text(app.bundleIdentifier)
-                        .font(.system(size: 11.5))
+        return VStack(alignment: .leading, spacing: 10) {
+            appHeaderCard(app: app, files: files, size: appSize, isScanning: isActivelyScanning)
+
+            if !isActivelyScanning {
+                if files.isEmpty {
+                    Text(String(format: String(localized: "No additional files found for %@."), app.appName))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                } else {
+                    let grouped = groupedFiles(for: files)
+                    ForEach(grouped, id: \.group) { entry in
+                        DisclosureGroup(isExpanded: groupExpansionBinding(app.bundleIdentifier, group: entry.group)) {
+                            VStack(spacing: 2) {
+                                ForEach(entry.urls, id: \.self) { fileURL in
+                                    FileRow(
+                                        fileURL: fileURL,
+                                        isSelected: fileSelectionBinding(for: fileURL),
+                                        fileSize: cachedSize(fileURL),
+                                        onRemove: { removeSingleFile(fileURL) }
+                                    )
+                                    .transition(
+                                        reduceMotion
+                                            ? .opacity
+                                            : .asymmetric(
+                                                insertion: .opacity,
+                                                removal: .move(edge: .leading).combined(with: .opacity)
+                                            )
+                                    )
+                                }
+                            }
+                            .padding(.leading, 12)
+                        } label: {
+                            groupHeader(entry.group, urls: entry.urls)
+                        }
+                        .padding(.horizontal, 6)
+                    }
+                }
+            }
+        }
+        .id(app.bundleIdentifier)
+    }
+
+    // MARK: - App Header Card
+
+    private func appHeaderCard(app: InstalledApp, files: [URL], size: Int64, isScanning: Bool) -> some View {
+        CardSurface(padding: 14, tint: Tint.purple) {
+            VStack(spacing: 10) {
+                HStack(spacing: 12) {
+                    Image(nsImage: app.icon)
+                        .resizable()
+                        .frame(width: 40, height: 40)
+                        .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(app.appName)
+                            .font(.system(size: 15, weight: .bold))
+                        Text(app.bundleIdentifier)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    if isScanning {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if !files.isEmpty {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                                .font(.system(size: 15, weight: .bold))
+                                .monospacedDigit()
+                            Text(filesCountText(count: files.count))
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                }
+
+                if !files.isEmpty {
+                    HStack(spacing: 8) {
+                        Button("Select All") {
+                            appState.selectedFiles.formUnion(files)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        Button("Deselect All") {
+                            appState.selectedFiles.subtract(files)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        Spacer()
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Scanning Placeholder Card
+
+    private var scanningPlaceholderCard: some View {
+        let scanningApp = appState.currentlyScanningBundleID.flatMap { bundleID in
+            appState.selectedAppSnapshots[bundleID] ?? appState.installedApps.first { $0.bundleIdentifier == bundleID }
+        }
+
+        return CardSurface(padding: 14, tint: Tint.blue) {
+            HStack(spacing: 12) {
+                if let icon = scanningApp?.icon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .frame(width: 36, height: 36)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 36, height: 36)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    if let name = scanningApp?.appName {
+                        Text(name)
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    Text(
+                        String(
+                            format: String(localized: "Scanning %lld of %lld apps..."),
+                            Int64(min(appState.scansCompleted + 1, appState.scansTotal)),
+                            Int64(appState.scansTotal)
+                        )
+                    )
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
                 }
 
                 Spacer()
 
-                if !appState.discoveredFiles.isEmpty {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        CountUpBytes(bytes: totalSelectedSize)
-                            .font(.system(size: 18, weight: .bold))
-                        Text(filesCountText(count: appState.discoveredFiles.count))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                    }
-                    .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.9),
-                               value: appState.discoveredFiles.count)
+                if reduceMotion {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    SearchPulse()
+                        .scaleEffect(0.6)
                 }
             }
         }
     }
 
-    // MARK: - Scanning state
-
-    private var scanningState: some View {
-        VStack(spacing: 14) {
-            Spacer()
-            if reduceMotion {
-                ProgressView(LocalizedStringKey("Scanning for related files..."))
-            } else {
-                SearchPulse()
-                Text("Scanning for related files...")
-                    .font(.system(size: 13, weight: .medium))
-            }
-            Text(checkingLocationsText(count: appState.currentAppFileSearchLocationCount))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .contentTransition(.numericText())
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: - Grouped list
-
-    private var fileGroupsList: some View {
-        List {
-            ForEach(groupedFiles, id: \.group) { entry in
-                DisclosureGroup(isExpanded: groupExpansionBinding(entry.group)) {
-                    // No .staggered() inside the lazy List — a delayed reveal
-                    // would blank rows as they scroll in. The removal
-                    // transition still sweeps deleted rows out.
-                    ForEach(entry.urls, id: \.self) { fileURL in
-                        FileRow(
-                            fileURL: fileURL,
-                            isSelected: fileSelectionBinding(for: fileURL),
-                            fileSize: cachedSize(fileURL),
-                            onRemove: { removeSingleFile(fileURL) }
-                        )
-                        .transition(
-                            reduceMotion
-                                ? .opacity
-                                : .asymmetric(
-                                    insertion: .opacity,
-                                    removal: .move(edge: .leading).combined(with: .opacity)
-                                )
-                        )
-                    }
-                } label: {
-                    groupHeader(entry.group, urls: entry.urls)
-                }
-            }
-        }
-        .id(app.id)
-    }
+    // MARK: - Group Header
 
     private func groupHeader(_ group: LeftoverGroup, urls: [URL]) -> some View {
         let groupSize = urls.reduce(Int64(0)) { $0 + (cachedSize($1) ?? 0) }
@@ -298,19 +363,21 @@ struct AppFilesView: View {
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 
-    private func groupExpansionBinding(_ group: LeftoverGroup) -> Binding<Bool> {
+    private func groupExpansionBinding(_ bundleID: String, group: LeftoverGroup) -> Binding<Bool> {
         Binding(
-            get: { !collapsedGroups.contains(group) },
+            get: { !(collapsedGroups[bundleID]?.contains(group) ?? false) },
             set: { expanded in
                 let change = {
+                    var set = collapsedGroups[bundleID] ?? []
                     if expanded {
-                        collapsedGroups.remove(group)
+                        set.remove(group)
                     } else {
-                        collapsedGroups.insert(group)
+                        set.insert(group)
                     }
+                    collapsedGroups[bundleID] = set
                 }
                 if reduceMotion {
                     change()
@@ -370,10 +437,6 @@ struct AppFilesView: View {
         String(format: String(localized: "%lld files"), Int64(count))
     }
 
-    private func checkingLocationsText(count: Int) -> String {
-        String(format: String(localized: "Checking %lld locations..."), Int64(count))
-    }
-
     private var removeFilesLabel: String {
         String(
             format: String(localized: "Remove %lld files (%@)"),
@@ -400,8 +463,7 @@ struct AppFilesView: View {
     }
 
     private func removeSingleFile(_ url: URL) {
-        appState.selectedFiles = [url]
-        appState.removeSelectedFiles()
+        appState.removeSelectedFiles(confirmedURLs: [url])
     }
 }
 

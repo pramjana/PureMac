@@ -83,7 +83,7 @@ final class AppStateTests: XCTestCase {
 
         await state.retryAfterFullDiskAccess(
             items: items,
-            context: .uninstall(appName: "Fixture", failedCount: items.count)
+            context: .uninstall(appNames: ["Fixture"], failedCount: items.count)
         )
         await fulfillment(of: [invoked], timeout: 1)
 

@@ -24,6 +24,7 @@
 "Grant Full Disk Access" = "Grant Full Disk Access";
 "%lld item(s) need Full Disk Access" = "%lld item(s) need Full Disk Access";
 "Uninstalling %@: %lld file(s) need Full Disk Access" = "Uninstalling %@: %lld file(s) need Full Disk Access";
+"Uninstalling %lld apps: %lld file(s) need Full Disk Access" = "Uninstalling %lld apps: %lld file(s) need Full Disk Access";
 "%lld item(s) need Full Disk Access to remove. Tap Grant Access to fix in one step." = "%lld item(s) need Full Disk Access to remove. Tap Grant Access to fix in one step.";
 "Couldn't remove %@%@. They may be in use or protected by macOS." = "Couldn't remove %@%@. They may be in use or protected by macOS.";
 " and %lld more" = " and %lld more";
@@ -145,6 +146,7 @@
 /* App Files (AppFilesView) */
 "%lld files" = "%lld files";
 "Scanning for related files..." = "Scanning for related files...";
+"Scanning %lld of %lld apps..." = "Scanning %lld of %lld apps...";
 "Checking %lld locations..." = "Checking %lld locations...";
 "No Related Files" = "No Related Files";
 "No additional files found for %@." = "No additional files found for %@.";

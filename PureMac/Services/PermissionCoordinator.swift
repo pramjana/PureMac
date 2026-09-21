@@ -22,10 +22,10 @@ final class PermissionCoordinator: ObservableObject {
     @Published private(set) var failedItemPaths: [String] = []
     @Published private(set) var context: PromptContext = .general
 
-    enum PromptContext {
+    enum PromptContext: Equatable {
         case general
         case cleanup(failedCount: Int)
-        case uninstall(appName: String, failedCount: Int)
+        case uninstall(appNames: [String], failedCount: Int)
 
         var headline: String {
             switch self {
@@ -36,12 +36,20 @@ final class PermissionCoordinator: ObservableObject {
                     format: String(localized: "%lld item(s) need Full Disk Access"),
                     Int64(n)
                 )
-            case .uninstall(let app, let n):
-                return String(
-                    format: String(localized: "Uninstalling %@: %lld file(s) need Full Disk Access"),
-                    app,
-                    Int64(n)
-                )
+            case .uninstall(let appNames, let n):
+                if appNames.count == 1, let singleApp = appNames.first {
+                    return String(
+                        format: String(localized: "Uninstalling %@: %lld file(s) need Full Disk Access"),
+                        singleApp,
+                        Int64(n)
+                    )
+                } else {
+                    return String(
+                        format: String(localized: "Uninstalling %lld apps: %lld file(s) need Full Disk Access"),
+                        Int64(appNames.count),
+                        Int64(n)
+                    )
+                }
             }
         }
     }

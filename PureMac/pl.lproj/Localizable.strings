@@ -24,6 +24,7 @@
 "Grant Full Disk Access" = "Przyznaj pełny dostęp do dysku";
 "%lld item(s) need Full Disk Access" = "%lld element(ów) wymaga pełnego dostępu do dysku";
 "Uninstalling %@: %lld file(s) need Full Disk Access" = "Odinstalowywanie %@: %lld plik(i) wymaga(ją) pełnego dostępu do dysku";
+"Uninstalling %lld apps: %lld file(s) need Full Disk Access" = "Uninstalling %lld apps: %lld file(s) need Full Disk Access";
 "%lld item(s) need Full Disk Access to remove. Tap Grant Access to fix in one step." = "%lld element(ów) wymaga pełnego dostępu do dysku, aby je usunąć. Kliknij Przyznaj dostęp, aby naprawić to w jednym kroku.";
 "Couldn't remove %@%@. They may be in use or protected by macOS." = "Nie udało się usunąć %@%@. Mogą być w użyciu lub chronione przez macOS.";
 " and %lld more" = " i %lld więcej";
@@ -145,6 +146,7 @@
 /* App Files (AppFilesView) */
 "%lld files" = "%lld plików";
 "Scanning for related files..." = "Skanowanie powiązanych plików...";
+"Scanning %lld of %lld apps..." = "Scanning %lld of %lld apps...";
 "Checking %lld locations..." = "Sprawdzanie %lld lokalizacji...";
 "No Related Files" = "Brak powiązanych plików";
 "No additional files found for %@." = "Nie znaleziono dodatkowych plików dla %@.";

@@ -104,6 +104,7 @@
 /* App Files (AppFilesView) */
 "%lld files" = "%lld ملف";
 "Scanning for related files..." = "جارٍ البحث عن الملفات المرتبطة...";
+"Scanning %lld of %lld apps..." = "Scanning %lld of %lld apps...";
 "Checking %lld locations..." = "جارٍ فحص %lld موقعًا...";
 "No Related Files" = "لا توجد ملفات مرتبطة";
 "No additional files found for %@." = "لم يتم العثور على ملفات إضافية لـ %@.";
@@ -294,6 +295,7 @@
 "Grant Full Disk Access" = "منح الوصول الكامل إلى القرص";
 "%lld item(s) need Full Disk Access" = "%lld عنصر يحتاج إلى الوصول الكامل إلى القرص";
 "Uninstalling %@: %lld file(s) need Full Disk Access" = "إلغاء تثبيت %@: %lld ملف يحتاج إلى الوصول الكامل إلى القرص";
+"Uninstalling %lld apps: %lld file(s) need Full Disk Access" = "Uninstalling %lld apps: %lld file(s) need Full Disk Access";
 "%lld item(s) need Full Disk Access to remove. Tap Grant Access to fix in one step." = "%lld عنصر يحتاج إلى الوصول الكامل لحذفه. اضغط منح الوصول لإصلاحه بخطوة واحدة.";
 "Couldn't remove %@%@. They may be in use or protected by macOS." = "تعذّر حذف %@%@. قد تكون قيد الاستخدام أو محمية بواسطة macOS.";
 " and %lld more" = " و%lld أخرى";
