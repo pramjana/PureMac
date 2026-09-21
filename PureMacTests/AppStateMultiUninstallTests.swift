@@ -661,14 +661,31 @@ final class AppStateMultiUninstallTests: XCTestCase {
     // MARK: - Expert Mode (M1)
 
     func testExpertModeDefaultsToFalse() {
+        let priorValue = UserDefaults.standard.object(forKey: AppState.expertModeKey)
+        defer {
+            if let priorValue = priorValue {
+                UserDefaults.standard.set(priorValue, forKey: AppState.expertModeKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: AppState.expertModeKey)
+            }
+        }
+
         UserDefaults.standard.removeObject(forKey: AppState.expertModeKey)
         let state = AppState(performStartupTasks: false)
         XCTAssertFalse(state.isExpertMode)
     }
 
     func testTogglingExpertModePersistsToUserDefaults() {
+        let priorValue = UserDefaults.standard.object(forKey: AppState.expertModeKey)
+        defer {
+            if let priorValue = priorValue {
+                UserDefaults.standard.set(priorValue, forKey: AppState.expertModeKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: AppState.expertModeKey)
+            }
+        }
+
         let state = AppState(performStartupTasks: false)
-        defer { UserDefaults.standard.removeObject(forKey: AppState.expertModeKey) }
 
         state.isExpertMode = true
         XCTAssertTrue(UserDefaults.standard.bool(forKey: AppState.expertModeKey))
@@ -678,8 +695,16 @@ final class AppStateMultiUninstallTests: XCTestCase {
     }
 
     func testExpertModeInitializesFromStoredUserDefaults() {
+        let priorValue = UserDefaults.standard.object(forKey: AppState.expertModeKey)
+        defer {
+            if let priorValue = priorValue {
+                UserDefaults.standard.set(priorValue, forKey: AppState.expertModeKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: AppState.expertModeKey)
+            }
+        }
+
         UserDefaults.standard.set(true, forKey: AppState.expertModeKey)
-        defer { UserDefaults.standard.removeObject(forKey: AppState.expertModeKey) }
 
         let state = AppState(performStartupTasks: false)
         XCTAssertTrue(state.isExpertMode)
