@@ -658,6 +658,85 @@ final class AppStateMultiUninstallTests: XCTestCase {
         XCTAssertEqual(state.selectedAppSnapshots["com.test.appa"]?.size, 500)
     }
 
+    // MARK: - Expert Mode (M1)
+
+    func testExpertModeDefaultsToFalse() {
+        UserDefaults.standard.removeObject(forKey: AppState.expertModeKey)
+        let state = AppState(performStartupTasks: false)
+        XCTAssertFalse(state.isExpertMode)
+    }
+
+    func testTogglingExpertModePersistsToUserDefaults() {
+        let state = AppState(performStartupTasks: false)
+        defer { UserDefaults.standard.removeObject(forKey: AppState.expertModeKey) }
+
+        state.isExpertMode = true
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: AppState.expertModeKey))
+
+        state.isExpertMode = false
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: AppState.expertModeKey))
+    }
+
+    func testExpertModeInitializesFromStoredUserDefaults() {
+        UserDefaults.standard.set(true, forKey: AppState.expertModeKey)
+        defer { UserDefaults.standard.removeObject(forKey: AppState.expertModeKey) }
+
+        let state = AppState(performStartupTasks: false)
+        XCTAssertTrue(state.isExpertMode)
+    }
+
+    // MARK: - Expert Mode Selection Helpers (M2)
+
+    func testToggleAppSelectionAddsAndRemovesApp() {
+        let state = AppState(
+            performStartupTasks: false,
+            appFileScanner: { _, _, completion in completion([]) }
+        )
+
+        let appA = makeApp(name: "AppA", bundleID: "com.test.appa")
+        let appB = makeApp(name: "AppB", bundleID: "com.test.appb")
+
+        state.selectApps([appA])
+        XCTAssertEqual(state.selectedAppBundleIDs, ["com.test.appa"])
+
+        state.toggleAppSelection(appB)
+        XCTAssertEqual(state.selectedAppBundleIDs, ["com.test.appa", "com.test.appb"])
+
+        state.toggleAppSelection(appA)
+        XCTAssertEqual(state.selectedAppBundleIDs, ["com.test.appb"])
+    }
+
+    func testSelectAllAppsAddsEntireListToBatch() {
+        let state = AppState(
+            performStartupTasks: false,
+            appFileScanner: { _, _, completion in completion([]) }
+        )
+
+        let appA = makeApp(name: "AppA", bundleID: "com.test.appa")
+        let appB = makeApp(name: "AppB", bundleID: "com.test.appb")
+        let appC = makeApp(name: "AppC", bundleID: "com.test.appc")
+
+        state.selectAllApps([appA, appB, appC])
+        XCTAssertEqual(state.selectedAppBundleIDs, ["com.test.appa", "com.test.appb", "com.test.appc"])
+    }
+
+    func testDeselectAllAppsRemovesTargetListPreservingOthers() {
+        let state = AppState(
+            performStartupTasks: false,
+            appFileScanner: { _, _, completion in completion([]) }
+        )
+
+        let appA = makeApp(name: "AppA", bundleID: "com.test.appa")
+        let appB = makeApp(name: "AppB", bundleID: "com.test.appb")
+        let appC = makeApp(name: "AppC", bundleID: "com.test.appc")
+
+        state.selectApps([appA, appB, appC])
+        XCTAssertEqual(state.selectedAppBundleIDs, ["com.test.appa", "com.test.appb", "com.test.appc"])
+
+        state.deselectAllApps([appA, appB])
+        XCTAssertEqual(state.selectedAppBundleIDs, ["com.test.appc"])
+    }
+
 
     // MARK: - Helpers
 

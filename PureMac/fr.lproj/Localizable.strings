@@ -458,3 +458,8 @@
 
 /* Simulator runtimes */
 "Simulator runtime" = "Runtime de simulateur";
+
+/* Expert Mode */
+"Expert Mode" = "Mode expert";
+"Toggle checkboxes for batch multi-selection" = "Afficher les cases à cocher pour sélection multiple";
+"%lld of %lld apps selected" = "%lld sur %lld apps sélectionnées";

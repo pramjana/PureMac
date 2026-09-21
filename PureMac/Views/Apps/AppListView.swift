@@ -37,6 +37,12 @@ struct AppListView: View {
         .navigationTitle(installedAppsTitle)
         .toolbar {
             ToolbarItemGroup {
+                Toggle(isOn: $appState.isExpertMode) {
+                    Label(String(localized: "Expert Mode"), systemImage: appState.isExpertMode ? "checklist.checked" : "checklist")
+                }
+                .help(String(localized: "Toggle checkboxes for batch multi-selection"))
+                .accessibilityLabel(String(localized: "Expert Mode"))
+
                 Button {
                     appState.loadInstalledApps()
                 } label: {
@@ -66,6 +72,48 @@ struct AppListView: View {
         String(format: String(localized: "Uninstall (%lld files)"), Int64(count))
     }
 
+    // MARK: - Expert Mode Header Bar
+
+    private var expertModeHeaderBar: some View {
+        let allFilteredSelected = !filteredApps.isEmpty && filteredApps.allSatisfy { appState.selectedAppBundleIDs.contains($0.bundleIdentifier) }
+        let selectedFilteredCount = filteredApps.filter { appState.selectedAppBundleIDs.contains($0.bundleIdentifier) }.count
+
+        return HStack(spacing: 10) {
+            Toggle(isOn: Binding(
+                get: { allFilteredSelected },
+                set: { select in
+                    if select {
+                        appState.selectAllApps(filteredApps)
+                    } else {
+                        appState.deselectAllApps(filteredApps)
+                    }
+                }
+            )) {
+                Text(LocalizedStringKey(allFilteredSelected ? "Deselect All" : "Select All"))
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .toggleStyle(AnimatedCheckboxStyle())
+            .accessibilityLabel(LocalizedStringKey(allFilteredSelected ? "Deselect All" : "Select All"))
+
+            Spacer()
+
+            Text(String(
+                format: String(localized: "%lld of %lld apps selected"),
+                Int64(selectedFilteredCount),
+                Int64(filteredApps.count)
+            ))
+            .font(.system(size: 11.5))
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.03))
+        .overlay(alignment: .bottom) {
+            Divider().opacity(0.5)
+        }
+    }
+
     // MARK: - App Table (left side)
 
     private var appTable: some View {
@@ -84,38 +132,89 @@ struct AppListView: View {
                     actionLabel: "Retry"
                 )
             } else {
-                Table(filteredApps, selection: $selection, sortOrder: $sortOrder) {
-                    TableColumn("Application", value: \.appName) { app in
-                        HStack(spacing: 8) {
-                            HoverScaleIcon(icon: app.icon)
-                            Text(app.appName)
+                VStack(spacing: 0) {
+                    if appState.isExpertMode {
+                        expertModeHeaderBar
+
+                        Table(filteredApps, selection: $selection, sortOrder: $sortOrder) {
+                            TableColumn("") { app in
+                                let isChecked = appState.selectedAppBundleIDs.contains(app.bundleIdentifier)
+                                Toggle(isOn: Binding(
+                                    get: { isChecked },
+                                    set: { _ in appState.toggleAppSelection(app) }
+                                )) {
+                                    EmptyView()
+                                }
+                                .toggleStyle(AnimatedCheckboxStyle())
+                                .labelsHidden()
+                                .accessibilityLabel("Select \(app.appName)")
+                            }
+                            .width(ideal: 24, max: 32)
+
+                            TableColumn("Application", value: \.appName) { app in
+                                HStack(spacing: 8) {
+                                    HoverScaleIcon(icon: app.icon)
+                                    Text(app.appName)
+                                }
+                            }
+                            .width(min: 150)
+
+                            TableColumn("Size", value: \.size) { app in
+                                Text(app.formattedSize)
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                            .width(ideal: 70)
+                        }
+                    } else {
+                        Table(filteredApps, selection: $selection, sortOrder: $sortOrder) {
+                            TableColumn("Application", value: \.appName) { app in
+                                HStack(spacing: 8) {
+                                    HoverScaleIcon(icon: app.icon)
+                                    Text(app.appName)
+                                }
+                            }
+                            .width(min: 150)
+
+                            TableColumn("Size", value: \.size) { app in
+                                Text(app.formattedSize)
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                            .width(ideal: 70)
                         }
                     }
-                    .width(min: 150)
-
-                    TableColumn("Size", value: \.size) { app in
-                        Text(app.formattedSize)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                    .width(ideal: 70)
                 }
+                .id(appState.isExpertMode)
                 .onChange(of: selection) { newSelection in
-                    let selectedApps = appState.installedApps.filter { newSelection.contains($0.id) }
-                    appState.selectApps(selectedApps)
+                    if appState.isExpertMode {
+                        let currentIDs = Set(appState.installedApps.filter { appState.selectedAppBundleIDs.contains($0.bundleIdentifier) }.map(\.id))
+                        guard newSelection != currentIDs else { return }
+
+                        let diff = newSelection.symmetricDifference(currentIDs)
+                        if diff.count == 1, let toggledID = diff.first,
+                           let app = appState.installedApps.first(where: { $0.id == toggledID }) {
+                            appState.toggleAppSelection(app)
+                        } else if newSelection.count == 1, let clickedID = newSelection.first,
+                                  let app = appState.installedApps.first(where: { $0.id == clickedID }) {
+                            appState.toggleAppSelection(app)
+                        } else {
+                            if selection != currentIDs { selection = currentIDs }
+                        }
+                    } else {
+                        let selectedApps = appState.installedApps.filter { newSelection.contains($0.id) }
+                        appState.selectApps(selectedApps)
+                    }
                 }
                 .onChange(of: appState.selectedAppBundleIDs) { newBundleIDs in
                     let mappedIDs = Set(appState.installedApps.filter { newBundleIDs.contains($0.bundleIdentifier) }.map(\.id))
                     if selection != mappedIDs { selection = mappedIDs }
                 }
                 .onChange(of: appState.installedApps) { apps in
-                    // Refresh produces new UUIDs: remap highlight from stable bundleIDs
                     let mappedIDs = Set(apps.filter { appState.selectedAppBundleIDs.contains($0.bundleIdentifier) }.map(\.id))
                     if selection != mappedIDs { selection = mappedIDs }
                 }
                 .onAppear {
-                    // Sync the highlight when this view mounts already pointed
-                    // at externally-selected apps.
                     let mappedIDs = Set(appState.installedApps.filter { appState.selectedAppBundleIDs.contains($0.bundleIdentifier) }.map(\.id))
                     if selection != mappedIDs {
                         selection = mappedIDs

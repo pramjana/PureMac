@@ -462,3 +462,8 @@
 
 /* Simulator runtimes */
 "Simulator runtime" = "模拟器运行时";
+
+/* Expert Mode */
+"Expert Mode" = "专家模式";
+"Toggle checkboxes for batch multi-selection" = "切换批量多选复选框";
+"%lld of %lld apps selected" = "已选择 %lld / %lld 个应用";

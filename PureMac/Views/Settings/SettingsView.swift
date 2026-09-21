@@ -37,6 +37,7 @@ enum SearchSensitivity: String, CaseIterable, Identifiable, Codable {
 }
 
 struct GeneralSettingsView: View {
+    @EnvironmentObject var appState: AppState
     @AppStorage("settings.general.launchAtLogin") private var launchAtLogin = false
     @AppStorage("settings.general.searchSensitivity") private var sensitivity: SearchSensitivity = .enhanced
     @AppStorage("settings.general.confirmBeforeDelete") private var confirmBeforeDelete = true
@@ -53,6 +54,11 @@ struct GeneralSettingsView: View {
             }
 
             Section("App Scanning") {
+                Toggle("Expert Mode", isOn: $appState.isExpertMode)
+                Text("Toggle checkboxes for batch multi-selection")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Picker("Search sensitivity", selection: $sensitivity) {
                     ForEach(SearchSensitivity.allCases) { level in
                         VStack(alignment: .leading) {

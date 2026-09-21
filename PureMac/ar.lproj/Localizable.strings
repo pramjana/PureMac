@@ -462,3 +462,8 @@
 
 /* Simulator runtimes */
 "Simulator runtime" = "وقت تشغيل المحاكي";
+
+/* Expert Mode */
+"Expert Mode" = "وضع الخبراء";
+"Toggle checkboxes for batch multi-selection" = "تبديل خانات الاختيار للتحديد المتعدد";
+"%lld of %lld apps selected" = "%lld من %lld تطبيق محدد";

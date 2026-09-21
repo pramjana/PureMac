@@ -462,3 +462,8 @@
 
 /* Simulator runtimes */
 "Simulator runtime" = "Середовище виконання симулятора";
+
+/* Expert Mode */
+"Expert Mode" = "Режим експерта";
+"Toggle checkboxes for batch multi-selection" = "Показати прапорці для множинного вибору";
+"%lld of %lld apps selected" = "Вибрано %lld з %lld програм";

@@ -462,3 +462,8 @@
 
 /* Simulator runtimes */
 "Simulator runtime" = "シミュレータランタイム";
+
+/* Expert Mode */
+"Expert Mode" = "エキスパートモード";
+"Toggle checkboxes for batch multi-selection" = "複数選択用チェックボックスを切り替え";
+"%lld of %lld apps selected" = "%lld / %lld 個のアプリを選択中";

@@ -106,6 +106,18 @@ final class AppState: ObservableObject {
     /// In-memory cache of app metadata (icon, name, size, path) for section headers and Finder hand-offs.
     @Published private(set) var selectedAppSnapshots: [String: InstalledApp] = [:]
 
+    // MARK: - Expert Mode State
+
+    /// Persistent key for Expert Mode in UserDefaults.
+    static let expertModeKey = "settings.uninstaller.expertMode"
+
+    /// Controls whether the checkbox multi-selection column and controls are visible in AppListView.
+    @Published var isExpertMode: Bool {
+        didSet {
+            UserDefaults.standard.set(isExpertMode, forKey: Self.expertModeKey)
+        }
+    }
+
     /// Discovered leftover files partitioned by app bundle identifier.
     @Published var discoveredFilesByApp: [String: [URL]] = [:]
 
@@ -113,6 +125,12 @@ final class AppState: ObservableObject {
     var discoveredFiles: [URL] {
         let allURLs = discoveredFilesByApp.values.flatMap { $0 }
         return Array(Set(allURLs)).sorted { $0.path < $1.path }
+    }
+
+    /// Currently selected applications reconstructed from snapshots, ordered by display name.
+    var selectedApps: [InstalledApp] {
+        selectedAppBundleIDs.compactMap { selectedAppSnapshots[$0] }
+            .sorted { $0.appName.localizedStandardCompare($1.appName) == .orderedAscending }
     }
 
     @Published var selectedFiles: Set<URL> = []
@@ -195,6 +213,7 @@ final class AppState: ObservableObject {
         self.locationsProvider = locationsProvider
         self.appFileScanner = appFileScanner
         self.appFileTrasher = appFileTrasher
+        self.isExpertMode = UserDefaults.standard.bool(forKey: Self.expertModeKey)
 
         // Listen for right-click "Uninstall with PureMac" hand-offs from the
         // Finder Services handler in AppDelegate.
@@ -331,6 +350,39 @@ final class AppState: ObservableObject {
         if !isScanningAppFiles {
             startNextScan()
         }
+    }
+
+    // MARK: - Selection Helpers
+
+    /// Toggles an application's inclusion in the multi-uninstall batch.
+    func toggleAppSelection(_ app: InstalledApp) {
+        if selectedAppBundleIDs.contains(app.bundleIdentifier) {
+            let remaining = selectedApps.filter { $0.bundleIdentifier != app.bundleIdentifier }
+            selectApps(remaining)
+        } else {
+            selectApps(selectedApps + [app])
+        }
+    }
+
+    /// Selects all applications in the provided list.
+    func selectAllApps(_ apps: [InstalledApp]) {
+        guard !apps.isEmpty else { return }
+        var map: [String: InstalledApp] = [:]
+        for app in selectedApps {
+            map[app.bundleIdentifier] = app
+        }
+        for app in apps {
+            map[app.bundleIdentifier] = app
+        }
+        selectApps(Array(map.values))
+    }
+
+    /// Deselects all applications in the provided list.
+    func deselectAllApps(_ apps: [InstalledApp]) {
+        guard !apps.isEmpty else { return }
+        let toRemoveIDs = Set(apps.map(\.bundleIdentifier))
+        let remaining = selectedApps.filter { !toRemoveIDs.contains($0.bundleIdentifier) }
+        selectApps(remaining)
     }
 
     /// Drops an app by bundle identifier: purges files, deselects, removes snapshots, and invalidates tokens.
