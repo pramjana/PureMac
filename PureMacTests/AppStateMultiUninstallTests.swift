@@ -436,6 +436,229 @@ final class AppStateMultiUninstallTests: XCTestCase {
         XCTAssertEqual(multiple.headline, "Uninstalling 2 apps: 5 file(s) need Full Disk Access")
     }
 
+    func testRescanWhileScanQueueIsActiveExecutesSequentiallyAndDrainsQueue() {
+        var scanCalls: [InstalledApp] = []
+        var pendingCompletions: [(Set<URL>) -> Void] = []
+
+        let state = AppState(
+            performStartupTasks: false,
+            appFileScanner: { app, _, completion in
+                scanCalls.append(app)
+                pendingCompletions.append(completion)
+            }
+        )
+
+        let appA = makeApp(name: "AppA", bundleID: "com.test.appa")
+        let appB = makeApp(name: "AppB", bundleID: "com.test.appb")
+        let appC = makeApp(name: "AppC", bundleID: "com.test.appc")
+
+        state.selectApps([appA, appB, appC])
+
+        // App A is currently scanning, B and C are queued
+        XCTAssertEqual(scanCalls.count, 1)
+        XCTAssertEqual(scanCalls[0].bundleIdentifier, "com.test.appa")
+        XCTAssertEqual(state.currentlyScanningBundleID, "com.test.appa")
+
+        // User triggers force-rescan of App A while App A is already in-flight
+        state.scanForAppFiles(appA)
+
+        // Must NOT spawn a second concurrent scan!
+        XCTAssertEqual(scanCalls.count, 1, "Force rescan must not start a concurrent scan while one is active")
+
+        // First scan of App A finishes with stale URLs; must be discarded and trigger the fresh rescan of App A
+        let staleURLs: Set<URL> = [URL(fileURLWithPath: "/tmp/a_stale")]
+        pendingCompletions[0](staleURLs)
+
+        // Fresh scan for App A should now be started
+        XCTAssertEqual(scanCalls.count, 2)
+        XCTAssertEqual(scanCalls[1].bundleIdentifier, "com.test.appa")
+        XCTAssertEqual(state.currentlyScanningBundleID, "com.test.appa")
+
+        // Fresh scan of App A finishes with new URLs
+        let freshURLs: Set<URL> = [URL(fileURLWithPath: "/tmp/a_fresh")]
+        pendingCompletions[1](freshURLs)
+
+        XCTAssertEqual(state.discoveredFilesByApp["com.test.appa"], [URL(fileURLWithPath: "/tmp/a_fresh")])
+
+        // Next queued item (App B) should now be scanning
+        XCTAssertEqual(scanCalls.count, 3)
+        XCTAssertEqual(scanCalls[2].bundleIdentifier, "com.test.appb")
+        XCTAssertEqual(state.currentlyScanningBundleID, "com.test.appb")
+
+        let urlsB: Set<URL> = [URL(fileURLWithPath: "/tmp/b_files")]
+        pendingCompletions[2](urlsB)
+
+        // Next queued item (App C) should now be scanning
+        XCTAssertEqual(scanCalls.count, 4)
+        XCTAssertEqual(scanCalls[3].bundleIdentifier, "com.test.appc")
+        XCTAssertEqual(state.currentlyScanningBundleID, "com.test.appc")
+
+        let urlsC: Set<URL> = [URL(fileURLWithPath: "/tmp/c_files")]
+        pendingCompletions[3](urlsC)
+
+        // Everything finished and queue drained
+        XCTAssertFalse(state.isScanningAppFiles)
+        XCTAssertNil(state.currentlyScanningBundleID)
+        XCTAssertEqual(state.scansCompleted, state.scansTotal)
+        XCTAssertEqual(state.discoveredFilesByApp["com.test.appb"], [URL(fileURLWithPath: "/tmp/b_files")])
+        XCTAssertEqual(state.discoveredFilesByApp["com.test.appc"], [URL(fileURLWithPath: "/tmp/c_files")])
+    }
+
+    func testDeselectingCurrentlyScanningAppDrainsRemainingQueue() {
+        var scanCalls: [InstalledApp] = []
+        var pendingCompletions: [(Set<URL>) -> Void] = []
+
+        let state = AppState(
+            performStartupTasks: false,
+            appFileScanner: { app, _, completion in
+                scanCalls.append(app)
+                pendingCompletions.append(completion)
+            }
+        )
+
+        let appA = makeApp(name: "AppA", bundleID: "com.test.appa")
+        let appB = makeApp(name: "AppB", bundleID: "com.test.appb")
+
+        state.selectApps([appA, appB])
+        XCTAssertEqual(scanCalls.count, 1)
+        XCTAssertEqual(scanCalls[0].bundleIdentifier, "com.test.appa")
+        XCTAssertEqual(state.currentlyScanningBundleID, "com.test.appa")
+
+        // Deselect App A while it is currently scanning
+        state.selectApps([appB])
+        XCTAssertFalse(state.selectedAppBundleIDs.contains("com.test.appa"))
+
+        // Complete App A's in-flight scan
+        pendingCompletions[0]([URL(fileURLWithPath: "/tmp/a_files")])
+
+        // App A's completion should be discarded and App B must start scanning
+        XCTAssertEqual(scanCalls.count, 2)
+        XCTAssertEqual(scanCalls[1].bundleIdentifier, "com.test.appb")
+        XCTAssertEqual(state.currentlyScanningBundleID, "com.test.appb")
+        XCTAssertNil(state.discoveredFilesByApp["com.test.appa"])
+
+        // Complete App B's scan
+        pendingCompletions[1]([URL(fileURLWithPath: "/tmp/b_files")])
+
+        XCTAssertFalse(state.isScanningAppFiles)
+        XCTAssertNil(state.currentlyScanningBundleID)
+        XCTAssertEqual(state.discoveredFilesByApp["com.test.appb"], [URL(fileURLWithPath: "/tmp/b_files")])
+    }
+
+    func testMidBatchAppAdditionsProgressCounterTracking() {
+        var scanCalls: [InstalledApp] = []
+        var pendingCompletions: [(Set<URL>) -> Void] = []
+
+        let state = AppState(
+            performStartupTasks: false,
+            appFileScanner: { app, _, completion in
+                scanCalls.append(app)
+                pendingCompletions.append(completion)
+            }
+        )
+
+        let appA = makeApp(name: "AppA", bundleID: "com.test.appa")
+        let appB = makeApp(name: "AppB", bundleID: "com.test.appb")
+        let appC = makeApp(name: "AppC", bundleID: "com.test.appc")
+
+        state.selectApps([appA])
+        XCTAssertEqual(state.scansTotal, 1)
+        XCTAssertEqual(state.scansCompleted, 0)
+        XCTAssertEqual(scanCalls.count, 1)
+
+        // Add App B and App C while App A is still scanning
+        state.selectApps([appA, appB, appC])
+
+        // scansTotal must account for the in-flight app + newly queued apps
+        XCTAssertEqual(state.scansTotal, 3)
+        XCTAssertEqual(state.scansCompleted, 0)
+
+        // App A finishes
+        pendingCompletions[0]([URL(fileURLWithPath: "/tmp/a")])
+        XCTAssertEqual(state.scansCompleted, 1)
+        XCTAssertLessThanOrEqual(state.scansCompleted, state.scansTotal)
+
+        // App B finishes
+        pendingCompletions[1]([URL(fileURLWithPath: "/tmp/b")])
+        XCTAssertEqual(state.scansCompleted, 2)
+        XCTAssertLessThanOrEqual(state.scansCompleted, state.scansTotal)
+
+        // App C finishes
+        pendingCompletions[2]([URL(fileURLWithPath: "/tmp/c")])
+        XCTAssertEqual(state.scansCompleted, 3)
+        XCTAssertEqual(state.scansCompleted, state.scansTotal)
+    }
+
+    func testPruningMultipleMissingInstalledApps() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+        let pathA = tempDir.appendingPathComponent("TestAppA_\(UUID().uuidString).app")
+        let pathB = tempDir.appendingPathComponent("TestAppB_\(UUID().uuidString).app")
+        let pathC = tempDir.appendingPathComponent("TestAppC_\(UUID().uuidString).app")
+
+        try FileManager.default.createDirectory(at: pathA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: pathB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: pathC, withIntermediateDirectories: true)
+
+        defer {
+            try? FileManager.default.removeItem(at: pathA)
+            try? FileManager.default.removeItem(at: pathB)
+            try? FileManager.default.removeItem(at: pathC)
+        }
+
+        let appA = InstalledApp(id: UUID(), appName: "AppA", bundleIdentifier: "com.test.appa", path: pathA, icon: NSImage(), size: 10)
+        let appB = InstalledApp(id: UUID(), appName: "AppB", bundleIdentifier: "com.test.appb", path: pathB, icon: NSImage(), size: 20)
+        let appC = InstalledApp(id: UUID(), appName: "AppC", bundleIdentifier: "com.test.appc", path: pathC, icon: NSImage(), size: 30)
+
+        let state = AppState(
+            performStartupTasks: false,
+            appFileScanner: { _, _, completion in completion([]) }
+        )
+
+        state.installedApps = [appA, appB, appC]
+        state.selectApps([appA, appB, appC])
+        state.discoveredFilesByApp["com.test.appa"] = [URL(fileURLWithPath: "/tmp/a_leftover")]
+        state.discoveredFilesByApp["com.test.appb"] = [URL(fileURLWithPath: "/tmp/b_leftover")]
+        state.discoveredFilesByApp["com.test.appc"] = [URL(fileURLWithPath: "/tmp/c_leftover")]
+        state.selectedFiles = [
+            URL(fileURLWithPath: "/tmp/a_leftover"),
+            URL(fileURLWithPath: "/tmp/b_leftover"),
+            URL(fileURLWithPath: "/tmp/c_leftover")
+        ]
+
+        // Remove AppA and AppB from disk simultaneously
+        try FileManager.default.removeItem(at: pathA)
+        try FileManager.default.removeItem(at: pathB)
+
+        // Must safely prune multiple missing apps without crashing or skipping
+        state.pruneMissingInstalledApps()
+
+        XCTAssertFalse(state.selectedAppBundleIDs.contains("com.test.appa"))
+        XCTAssertFalse(state.selectedAppBundleIDs.contains("com.test.appb"))
+        XCTAssertNil(state.discoveredFilesByApp["com.test.appa"])
+        XCTAssertNil(state.discoveredFilesByApp["com.test.appb"])
+
+        XCTAssertTrue(state.selectedAppBundleIDs.contains("com.test.appc"))
+        XCTAssertEqual(state.discoveredFilesByApp["com.test.appc"], [URL(fileURLWithPath: "/tmp/c_leftover")])
+        XCTAssertEqual(state.installedApps.map(\.bundleIdentifier), ["com.test.appc"])
+    }
+
+    func testSelectAppsRefreshesSnapshotsEvenWhenSelectionUnchanged() {
+        let state = AppState(
+            performStartupTasks: false,
+            appFileScanner: { _, _, completion in completion([]) }
+        )
+
+        let appA1 = makeApp(name: "AppA", bundleID: "com.test.appa", size: 100)
+        state.selectApps([appA1])
+        XCTAssertEqual(state.selectedAppSnapshots["com.test.appa"]?.size, 100)
+
+        // Updated instance with different size
+        let appA2 = makeApp(name: "AppA", bundleID: "com.test.appa", size: 500)
+        state.selectApps([appA2])
+        XCTAssertEqual(state.selectedAppSnapshots["com.test.appa"]?.size, 500)
+    }
+
+
     // MARK: - Helpers
 
     private func makeApp(name: String, bundleID: String, size: Int64 = 1) -> InstalledApp {

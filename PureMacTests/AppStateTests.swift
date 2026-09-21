@@ -49,8 +49,10 @@ final class AppStateTests: XCTestCase {
         state.scanForAppFiles(makeApp())
         state.scanForAppFiles(makeApp())
         let latest: Set<URL> = [URL(fileURLWithPath: "/fixtures/latest")]
-        completions[1](latest)
+        // Under sequential scanning, the older in-flight scan completes first, gets discarded as stale,
+        // and advances the queue to start the newer scan.
         completions[0]([URL(fileURLWithPath: "/fixtures/stale")])
+        completions[1](latest)
         XCTAssertEqual(Set(state.discoveredFiles), latest)
         XCTAssertEqual(state.selectedFiles, latest)
     }
