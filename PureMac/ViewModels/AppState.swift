@@ -574,7 +574,9 @@ final class AppState: ObservableObject {
                 } catch {
                     let nsError = error as NSError
                     if Self.isMissingFileError(nsError) {
-                        Logger.shared.log("Trash skipped for \(url.path): file no longer exists", level: .info)
+                        DispatchQueue.main.async {
+                            Logger.shared.log("Trash skipped for \(url.path): file no longer exists", level: .info)
+                        }
                         removed.append(url)
                     } else if Self.isPermissionDeniedError(nsError) {
                         if hasFullDiskAccess || Self.isLikelyAdministratorRemovalPath(url) {
@@ -584,7 +586,9 @@ final class AppState: ObservableObject {
                             failed.append(url)
                         }
                     } else {
-                        Logger.shared.log("Trash failed for \(url.path): \(error.localizedDescription)", level: .error)
+                        DispatchQueue.main.async {
+                            Logger.shared.log("Trash failed for \(url.path): \(error.localizedDescription)", level: .error)
+                        }
                         failed.append(url)
                     }
                 }

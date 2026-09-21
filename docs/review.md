@@ -1,201 +1,113 @@
-# Code Review — Multi-Select App Uninstaller
+# Code Review — Multi-Select App Uninstaller (Re-Review)
 
 - **Reviewer**: Code Reviewer (Maestri Engineering Team)
-- **Reviewed ref**: `feature/multi-select-uninstall` @ `43a9417` (feat(uninstaller): implement multi-select batch app uninstaller)
+- **Re-reviewed ref**: `feature/multi-select-uninstall` @ `6559a69` (fix(uninstaller): address review findings F1–F6)
+- **Prior review**: `43a9417` → `REQUEST CHANGES` (1× P1, 5× P2/P3) — record preserved in §5
 - **Baseline**: `main`
-- **Spec**: `docs/adr-proposal.md` (Architectural Decision Record — Alternative 4, "Sequential Progressive + BundleID Indexing")
+- **Spec**: `docs/adr-proposal.md` (ADR — Alternative 4, "Sequential Progressive + BundleID Indexing")
 - **Review date**: 2026-09-21
-- **Verdict**: 🔴 **REQUEST CHANGES**
 
 ---
 
-## 1. Executive Summary
-
-The feature is a faithful, well-structured implementation of the ADR's Alternative 4. The state model is cleanly keyed by `bundleIdentifier`, `discoveredFiles` is correctly derived, the generation-token staleness guard is correctly designed and tested, the row-trash selection wipe bug the ADR called out is fixed, the FDA retry flow is properly generalized and frozen, and all 11 locales plus the parity test are in sync. Build is clean relative to baseline, and the full suite passes (114/114, of which 12 are new `AppStateMultiUninstallTests`).
-
-However, the review found **one blocking defect**: the ADR's own Finder Services hand-off path (`scanForAppFiles`) can be invoked *while a sequential multi-app scan queue is still running*. The force-rescan bypasses the queue, which (a) runs two+ scans concurrently — directly violating the sequential-scan invariant the ADR explicitly rejected alternatives for (§2.3 / §2.4), (b) prematurely resets `isScanningAppFiles`/desyncs `scansCompleted`/`scansTotal`, and (c) in a narrow interleaving, leaves queued apps permanently unscanned. Both behaviors were **reproduced empirically** with deterministic unit tests against the actual `AppState` (findings F1.1/F1.2 below). This path is exactly ADR verification gate 8 ("Finder right-click → if already selected, force-rescans in place") and is untested.
-
-One P2 (progress counters desync when apps are added mid-batch) and several P3 nits (Set mutation during enumeration, non-`@Published` snapshot store, stale snapshots after refresh, redundant logger hops) are also reported. None of the P2/P3 items block merge on their own; all are cheap to fix alongside F1.
-
----
-
-## 2. Verdict
+## 0. Current Verdict
 
 ```
-Verdict:          REQUEST CHANGES
-Blocking issues:  1  (P1 — concurrent-scan / queue-stall via scanForAppFiles mid-batch)
-Tests:            114/114 pass (12 new); 0 failures
-Warnings:         0 new warnings introduced by this diff (baseline parity, see §6)
+Verdict:          🔴 REQUEST CHANGES  (narrow — single remaining item)
+Blocking issues:  1 (P2 — F6 warning regression: 4 new compiler warnings in changed code)
+F1–F5:            ✅ All resolved and independently verified (incl. re-running the review-1 reproductions)
+F6:               ⚠️ Intent correct, implementation regressed to 4 warnings (AppState.swift:577/587)
+Tests:            119/119 pass (0 failures, +5 new regression tests)
+Warnings:         +4 new warning instances in the diff (2 unique × 2 arch) — violates the 0-new-warnings gate
 ```
 
-**Blocking rationale**: F1 breaks two invariants the ADR treats as first-class requirements — strictly sequential scanning (§2.3, NFR §5.2) and deterministic first-scanned-wins attribution (§2.4) — in a user-reachable flow that the ADR itself wires up (M5 gate 8, `applyExternalUninstall`). The impact is silent: a user who ⌘-selects several apps and then right-clicks one in Finder can end up with concurrent scans, an incorrect "Scanning…" ticker, nondeterministic shared-file ownership, and possibly apps whose sections never materialize. This must be fixed and covered by tests before merge.
+F1–F5 are **verified fixed**. The only outstanding item is F6: removing the `DispatchQueue.main.async` wrappers around the two `Logger.shared.log` calls in `defaultAppFileTrasher` exposed the actor-isolation warning those wrappers had been suppressing (`Logger.shared` is a `@MainActor` static referenced from a `@Sendable` background closure). The diff therefore adds 4 compiler warnings (2 unique × arm64/x86_64). This is a small, precisely-understood remediation (~3 lines) — see §3.
 
 ---
 
-## 3. Scope & What Was Reviewed
+## 1. Re-Review Summary
 
-| Area | File(s) | Verdict |
-|---|---|---|
-| State model & queue | `PureMac/ViewModels/AppState.swift` | ⚠️ F1 (blocking), F2, F3, F4, F5 |
-| Presentation | `PureMac/Views/Apps/AppFilesView.swift`, `AppListView.swift` | ✅ clean; F1 manifests here |
-| Permission/FDA | `PureMac/Services/PermissionCoordinator.swift` | ✅ correct generalization |
-| Tests | `PureMacTests/AppStateMultiUninstallTests.swift` (new), `AppStateTests.swift` (updated) | ⚠️ gaps (see §7) |
-| Localization | 11× `Localizable.strings` | ✅ parity preserved |
-| Docs | `docs/adr-proposal.md`, `roadmap.md`, `README.md` | ✅ accurate |
-| Project | `project.pbxproj` (+`.`gitignore`) | ✅ test file wired correctly |
+The Developer addressed all six findings. The P1 blocker from review 1 (F1) is genuinely fixed: `scanForAppFiles` no longer runs the scanner out-of-band; it prepends the bundle to `scanQueue`, invalidates prior generation tokens, and lets `startNextScan()` drive everything — so only one scan is ever in flight and the queue always advances through `handleScanCompletion`'s guard-fail/success paths. Both review-1 reproductions were re-run against `6559a69` and now pass (previously failing) with consistent counters (`completed == total` at completion). F2–F5 are correct as analyzed in §2. Regression testing is strong: 5 new deterministic tests cover exactly the previously untested paths, and the pre-existing `AppStateTests` generation test was correctly re-sequenced for the new deterministic completion order.
+
+The one regression is F6 — new compiler warnings (see §3). Everything else meets the acceptance criteria.
 
 ---
 
-## 4. Detailed Findings
+## 2. Finding-by-Finding Resolution
 
-### 🔴 F1 (P1, blocking) — `scanForAppFiles` bypasses the sequential queue and can break the scan batch
-
-**Location**: `PureMac/ViewModels/AppState.swift:411–461` (`scanForAppFiles`), triggered via `applyExternalUninstall` at `AppState.swift:273–280`.
-
-**Context**: `selectApps([A, B, C])` pops A, starts the queue scan, and leaves `[B, C]` queued. If the user right-clicks an **already-selected** app in Finder ("Uninstall with PureMac"), `applyExternalUninstall` calls `scanForAppFiles(A)`:
-- `scanForAppFiles` runs the scanner *immediately* and out-of-band from `scanQueue` (`scanQueue.removeAll { $0 == A }` does not touch B/C; `startNextScan()` is never involved).
-- Its completion handler (lines 449–451) sets `isScanningAppFiles = false`, `currentlyScanningBundleID = nil` **without advancing the queue** — so the batch's "scan in progress" signal is killed while B/C are still pending.
-
-**Confirmed consequences** (reproduced with deterministic scratch tests against the real `AppState` in this review; repro harness omitted from the repo):
-
-1. **F1.1 — Concurrent scans** (violates ADR §2.3 sequential I/O contention design and §5.2). Trace: `selectApps([A,B])` → A1 in flight → `scanForAppFiles(A)` → a second A2 scan starts while A1 is still running. Two scans are simultaneously traversing disk. The ADR explicitly rejected parallel scanning for exactly this (thermal throttling / APFS cache saturation / beachballing). ⚠️ **Attribution nondeterminism**: with two scans live, "first-scanned wins" (§2.4) is decided by *completion order*, not the ADR's mandated lexicographic scan order — a shared file between A and B can flip owners between runs.
-
-2. **F1.2 — Premature `isScanningAppFiles = false` / progress desync**. After A2 completes: `isScanningAppFiles == false`, `scansCompleted == 1` but `scansTotal == 3`, and the ticker disappears while B/C are still queued. Verified output: `scanCalls=3, isScanningAppFiles=false, completed=1/3`.
-
-3. **F1.3 — Silent queue stall (narrow interleaving)**: if the rescan is the only live scan and the queue still holds not-yet-popped items (queue advancement happens *only* inside `handleScanCompletion`), the queued apps are never rescanned — their sections never appear and their files are never discovered/selected. The queue is only restarted incidentally when some *other* queued completion happens to fire.
-
-**Fix direction (for the Developer)**: either (i) route force-rescans through the queue (re-queue the bundle at the front, bump generation, `startNextScan()`), or (ii) guard `scanForAppFiles` to be a no-op while a multi-app batch is active, or (iii) if in-place rescan is kept, invalidate/drain `scanQueue` and end the rescan completion with `startNextScan()` so the invariant "queue always advances" holds, plus reconcile `scansCompleted/scansTotal`. Add unit tests: (a) rescan while queue active must never run a second concurrent scan; (b) after rescan, remaining queued apps are still scanned with correct counters.
+| # | Finding (Review 1) | Status | Evidence |
+|---|---|---|---|
+| **F1** | `scanForAppFiles` bypassed the scan queue → concurrent scans, premature `isScanningAppFiles=false`, silent queue stall | ✅ **Resolved** | `AppState.swift:415–456` — queue-cooperative: `scanQueue.removeAll { $0 == bundleID }; scanQueue.insert(bundleID, at: 0)`, idle branch calls `startNextScan()`, in-flight branch only bumps `scansTotal` for genuinely new items. No out-of-band scanner invocation remains. **Independently re-verified**: review-1 killer scenario (rescan of already-scanned C while B in flight) and in-flight rescan repro now pass — `scanCalls` never exceeds 1 in-flight scan; queue fully drains; `scansCompleted == scansTotal` (3/3, 2/2). New test `testRescanWhileScanQueueIsActiveExecutesSequentiallyAndDrainsQueue` covers it; `testDeselectingCurrentlyScanningAppDrainsRemainingQueue` covers the drop-active path. `AppStateTests` generation test re-sequenced to the now-deterministic completion order (stale-first). |
+| **F2** | Progress counters desynced on mid-batch additions ("3 of 2 apps") | ✅ **Resolved** | `selectApps` now accounts for the in-flight scan (`inFlight + scanQueue.count + newQueueItems.count`, `AppState.swift:321–324`); `handleScanCompletion` clamps via `min(scansCompleted + 1, scansTotal)` (:418); `dropApp` decrements `scansTotal` for pending/active drops, guarded against dropping below `scansCompleted` (:338, :351–352). Verified by `testMidBatchAppAdditionsProgressCounterTracking` (1→3 total, completed never exceeds total, ends 3/3). Residual: when apps are added mid-batch the ticker count can momentarily restart lower (e.g. show "1 of 3" during the second app) — cosmetic, bounded, self-correcting; acceptable. |
+| **F3** | `pruneMissingInstalledApps` mutated `Set` during enumeration (UB) | ✅ **Resolved** | `for bundleID in Array(selectedAppBundleIDs)` (`AppState.swift:752`). New `testPruningMultipleMissingInstalledApps` prunes two of three apps concurrently with no crash/skip. |
+| **F4** | `selectedAppSnapshots` not `@Published` (latent re-render trap) | ✅ **Resolved** | `@Published private(set) var selectedAppSnapshots` (`AppState.swift:107`). |
+| **F5** | Stale snapshots after Refresh (early-return skipped snapshot refresh) | ✅ **Resolved** | `selectApps` now refreshes snapshots and re-matches `selectedApp` in the unchanged-selection early-return (`AppState.swift:288–296`); no new scans start, no view feedback loop (bundle-ID set untouched). Verified by `testSelectAppsRefreshesSnapshotsEvenWhenSelectionUnchanged` (100 → 500 size refresh). |
+| **F6** | "Redundant" `DispatchQueue.main.async` logger hops | ⚠️ **Reopened** | See §3. The hops were load-bearing for warning suppression; removing them adds 4 compiler warnings. |
 
 ---
 
-### 🟠 F2 (P2) — Progress counters desync when apps are added mid-batch
+## 3. New Finding — F7 (P2): F6 introduced 4 compiler warnings
 
-**Location**: `AppState.swift:315–316` (`selectApps`).
+**Location**: `PureMac/ViewModels/AppState.swift:577, 587` (`defaultAppFileTrasher`).
 
-`scansTotal = scanQueue.count + newQueueItems.count; scansCompleted = 0` — but if apps are added while a scan is **already in flight** (⌘-clicking more apps mid-batch), the in-flight app's completion later increments `scansCompleted` past this reset window, so the ticker can read "Scanning 3 of 2 apps…" (the view clamps with `min(...)`, so it degrades to a wrong-but-not-crashing label). The ADR's "Scanning N of M apps..." contract is best-effort, hence P2 not P1; fix by tracking completed count relative to the current batch (e.g. reset only when starting a new batch from idle, or store a per-batch base).
+**What happened**: F6 deleted the `DispatchQueue.main.async { Logger.shared.log(...) }` wrappers from the two background-thread error paths. My review-1 F6 write-up called the wrappers "unnecessary noise" — that root-cause read was **incomplete and led the Developer astray**. Re-verified: `Logger.log` is `nonisolated` and internally thread-safe, but the *expression* `Logger.shared.log(...)` first reads `Logger.shared`, which is a **`@MainActor`-isolated static property** (`Logger.swift:22`). Reading it inside the `DispatchQueue.global(qos: .userInitiated).async { ... }` closure (which is `@Sendable`) is exactly what the wrappers existed to avoid.
 
----
-
-### 🟡 F3 (P3) — `pruneMissingInstalledApps` mutates a `Set` while enumerating it
-
-**Location**: `AppState.swift:758–771`.
-
-```swift
-for bundleID in selectedAppBundleIDs {
-    if let snapshot = selectedAppSnapshots[bundleID], !fileManager.fileExists(...) {
-        dropApp(bundleID)   // removes from selectedAppBundleIDs during iteration
-    }
-}
+**Evidence** (clean rebuild, `-derivedDataPath` clean):
 ```
+Total warnings:   6559a69 = 285   vs   43a9417 = 277   →  +8 (= 4 → 2 unique × 2 arch)
+Changed-file warnings:
+  AppState.swift:577,587  warning: main actor-isolated static property 'shared'
+                          can not be referenced from a Sendable closure   ← NEW (this commit)
+  (+ the 2 pre-existing warnings: :784 ignoredOrphansKey, :1146 #ImplicitStrongCapture — not from this diff)
+```
+No other warning changes exist in the committed files. So **this diff fails the "0 new compiler warnings" gate**, and under a future Swift 6 language-mode migration these two sites become **errors**.
 
-Mutation during `Set` enumeration is formally undefined behavior per the Swift language rules. Empirically the current stdlib does not trap for remove-current-element patterns (verified with a standalone harness: all elements visited, no crash), so the new `testPruningUninstalledAppDropsItFromSelection` passes — but this is a latent trap that can crash or mis-iterate on future stdlib changes. Cheap fix: snapshot the IDs first (`Array(selectedAppBundleIDs)`).
-
----
-
-### 🟡 F4 (P3) — `selectedAppSnapshots` is not `@Published`
-
-**Location**: `AppState.swift:107`.
-
-The snapshot store is `private(set) var` (non-`@Published`). Mutations never emit `objectWillChange`; the view only updates today because every mutation site also touches a `@Published` property in the same call (`selectedAppBundleIDs`, `discoveredFilesByApp`). This is fragile — a future edit that only mutates snapshots will silently not re-render. Recommend `@Published` (or a documented invariant that snapshot writes must be paired with a published write). Also, `AppFilesView.selectedApps` reads snapshots directly — consider a published accessor.
-
----
-
-### 🟡 F5 (P3) — Stale snapshots after Refresh
-
-**Location**: `AppState.swift:287–291` (`selectApps` early-return).
-
-`guard incomingIDs != selectedAppBundleIDs else { return }` skips the snapshot refresh when the selection set is unchanged — after `loadInstalledApps()` (toolbar Refresh), `selectedAppSnapshots` keep the **old** `InstalledApp` (stale icon/size) even though the table now has fresh instances with new UUIDs. Path/bundleID are identical so pruning stays correct; impact is cosmetic. Fix: update snapshots for already-selected apps before the early return (or in the `installedApps` onChange in `AppListView`).
+**Remediation options (Developer's choice, ~3 lines, pick one)**:
+1. **Restore the main-actor hop** for exactly these two calls (the proven, warning-free form that shipped in `43a9417`). Free of new warnings; slight log reordering is immaterial.
+2. **Avoid the actor-isolated singleton read from the `@Sendable` closure** — e.g., add a `nonisolated` static helper on `Logger` that closes over the OS logger without touching `Logger.shared`, or hoist a nonisolated logger reference before the `DispatchQueue.global.async`. Cleaner long-term; must be verified warning-free.
+3. As part of the eventual Swift 6 migration, revisit the 200+ pre-existing actor-isolation warnings codebase-wide (out of scope here, but F7 is a preview of that debt).
 
 ---
 
-### 🟡 F6 (P3) — Redundant main-thread hops around `Logger` calls
-
-**Location**: `AppState.swift:583, 595` (`defaultAppFileTrasher`).
-
-The diff wraps two background-thread `Logger.shared.log(...)` calls in `DispatchQueue.main.async { ... }`. `Logger.log` is explicitly `nonisolated` and internally hops (`Logger.swift:38–44`), so these wrappers are unnecessary noise — they reorder logging and add hops without fixing anything. Remove them (or explain the intended fix).
-
----
-
-### ✅ Non-issues verified (with evidence)
-
-- **Stale completion discarding** (`AppState.swift:389–406`): generation token + membership guard is correct; `testStaleCompletionForDeselectedAppIsDiscarded` passes. The guard-failure path correctly re-advances the queue via `startNextScan()`.
-- **Deduplication** (`handleScanCompletion`): `U_k = R_k \ (∪_{j<k} U_j)` is implemented exactly per ADR §2.4 and is deterministic under strict sequential execution (holds except during F1's concurrency).
-- **`removeSelectedFiles` re-entrance guard + high-risk dotpath guard + admin escalation + FDA flow**: untouched and operating on the union set correctly.
-- **FDA retry freezing**: `lastFailedRemovalURLs` and the new `lastFailedRemovalAppNames` are both frozen at `finishRemoval` time; the retry operates on frozen snapshots via `requestFullDiskAccessAndRetry(items:context:)` with `retryAfterFullDiskAccess` re-invoking `removeSelectedFiles(confirmedURLs:)` — correct.
-- **Row-trash bugfix**: `removeSingleFile` now uses `removeSelectedFiles(confirmedURLs: [url])` (`AppFilesView.swift:463–466`) — the ADR's "selection obliteration" defect is fixed; per-file removals no longer wipe other selections.
-- **`PermissionCoordinator.PromptContext` generalization**: single-vs-multi headline branching is correct and Equatable conformance is synthesized properly; `testPermissionCoordinatorHeadlineFormatting` passes.
-- **Memory**: all scanner/trasher completion closures capture `[weak self]`; no new retain cycles or Notification/KVO token leaks found.
-- **Concurrency**: all `@Published`/queue/selection mutations occur on `@MainActor`. Production scanner/trasher callbacks arrive off-main and are hopped via `Task { @MainActor }`. (Wildly spread pre-existing actor-isolation warnings exist across the codebase but this diff adds none, and no new data races were identified.)
-- **Reduce Motion**: all row-sweep animations branch on `NSWorkspace.shared.accessibilityDisplayShouldReduceMotion` (state) and `accessibilityReduceMotion` (view) consistently.
-
----
-
-## 5. Checklist — Comprehensive Quality & Safety Audit
-
-| Axis | Result | Notes |
-|---|---|---|
-| **Functional purity / structure** | ✅ | `discoveredFiles` is a pure derived computation; single source of truth (`discoveredFilesByApp`); dual storage prohibited per ADR and honored — old `discoveredFiles` storage removed |
-| **Immutability / FP discipline** | ✅ | Selection math is pure set/subtract operations (`selectedFiles` as `Set<URL>`); snapshots held immutably |
-| **Swift 6 / @MainActor safety** | ✅ / ⚠️ | All state mutations on main actor; background hops correct. ⚠️ F1 lets two scans run concurrently, causing the ADR's rejected parallel-I/O condition |
-| **Data-race safety** | ✅ | No new shared mutable state across threads; `Logger` calls nonisolated |
-| **ARC / retain cycles** | ✅ | `[weak self]` used throughout; no cycles; no token leaks |
-| **Correctness & edge cases** | ⚠️ | F1 (blocking), F2, F3 (latent), F5 documented above; boundary handling of empty selection, empty scans (`[]` entries → correct "No additional files" UI), and repeated `selectApps` no-op guard all correct |
-| **Multi-app FDA retry path** | ✅ | Attribution + frozen snapshot + retry verified by test |
-| **Security (OWASP/HIG/least-privilege)** | ✅ | High-risk dotpath guard unchanged and applies to union; FDA/root escalation unchanged; no new sandboxing or TCC surface |
-| **Accessibility / Reduce Motion** | ✅ | Branches throughout; DisclosureGroup + Toggle semantics preserved |
-| **Code cleanliness** | ⚠️ | F6 redundant hops; otherwise idiomatic, well-commented, no dead code (old `iconHovering`, `checkingLocationsText`, `scanningState`, `fileGroupsList` removed cleanly) |
-| **Localization parity** | ✅ | Both new keys present in all 11 locales with matching format specifiers; `LocalizationFilesTests` passes |
-| **No scope creep** | ✅ | Diff matches ADR/roadmap exactly; `roadmap.md`/`README.md` documentation only |
-
----
-
-## 6. Build & Test Verification
-
-Executed per ADR §6.1 (Debug, `platform=macOS`, `CODE_SIGNING_ALLOWED=NO`):
+## 4. Verification (Re-Review)
 
 ```
 xcodegen generate
-xcodebuild ... test   → ** TEST SUCCEEDED **
-  Executed 114 tests, 0 failures  (includes 12 new AppStateMultiUninstallTests)
+xcodebuild -project PureMac.xcodeproj -scheme PureMac -configuration Debug \
+  -destination 'platform=macOS' -derivedDataPath build-tests CODE_SIGNING_ALLOWED=NO test
+  → ** TEST SUCCEEDED ** — Executed 119 tests, 0 failures
+     (114 prior + 5 new regression tests; AppStateTests re-sequenced test passes)
+
+Independent re-verification (scratch harness outside the repo, removed after use):
+  • Review-1 killer scenario (rescan of already-scanned C while B in flight): PASS
+    — no concurrent scan (scanCalls stays 2), C rescanned after requeue, counters 3/3.
+  • Review-1 in-flight rescan repro: PASS — no concurrent scan (stays 1 until stale
+    completion discarded), queue drains, counters 2/2.
+  (Both harnesses failed against 43a9417; both pass against 6559a69.)
+
+Warnings: clean builds compared — 43a9417: 277 → 6559a69: 285; all +8 are F7.
+Security/ADR invariants: high-risk dotpath guard, FDA/admin flows, frozen retry
+snapshots, localization parity (11 locales), reduce-motion branches — unchanged, intact.
 ```
 
-**Warnings**: clean build of this branch emits **277** `warning:`-class lines; clean build of `main` baseline emits **284** — i.e. the diff introduces **zero new warnings** and slightly reduces them. The only two diagnostics attributed to changed files (`AppState.swift:784` actor-isolated `ignoredOrphansKey`, `AppState.swift:1146` `#ImplicitStrongCapture`) are pre-existing, in code the diff does not touch. No linter is configured in this repo (no `.swiftlint.yml`; CI runs xcodebuild only), so the "0 linter warnings" criterion is N/A. Note: the 200+ remaining actor-isolation warnings across `ScanEngine`/`CleaningEngine`/etc. will become **errors** when this project eventually migrates to Swift 6 language mode — pre-existing debt, out of scope for this review, but worth a dedicated follow-up.
+---
+
+## 5. Historical Record — Review #1 (43a9417) — Findings (for reference)
+
+- **F1 (P1, blocking — RESOLVED)**: `scanForAppFiles` ran the scanner out-of-band while the sequential queue was active → concurrent scans (violating ADR §2.3/§2.4 and making first-scanned-wins completion-order-dependent), premature `isScanningAppFiles = false`, desynced counters, and a narrow silent queue stall. Reproduced deterministically in review 1.
+- **F2 (P2)**: `scansTotal = scanQueue.count + newQueueItems.count` ignored the in-flight scan and reset `scansCompleted` mid-batch → "3 of 2 apps" ticker. → **RESOLVED** (§2).
+- **F3 (P3)**: Set mutation during enumeration in `pruneMissingInstalledApps` (formally UB). → **RESOLVED**.
+- **F4 (P3)**: `selectedAppSnapshots` non-`@Published`. → **RESOLVED**.
+- **F5 (P3)**: stale snapshots after Refresh. → **RESOLVED**.
+- **F6 (P3)**: redundant main-thread logger hops (my initial read) — **superseded by F7**: hops were warning-suppressive, and their removal regressed warnings.
+- Review-1 strengths stand: bundleID-keyed state, pure derived `discoveredFiles`, generation-token staleness guard, row-trash wipe bugfix, generalized FDA retry with frozen snapshot + app-name attribution, all-11-locale parity, `[weak self]` hygiene, `@MainActor` mutation discipline, zero scope creep.
 
 ---
 
-## 7. Test Adequacy — `PureMacTests/AppStateMultiUninstallTests.swift`
+## 6. Sign-off
 
-**Strengths** (all passing, deterministic via injected seams):
-- M1 sequential order + name-sorted queue + no-rescan-when-selected + re-scan-on-re-select + progress flags — good coverage of the happy path.
-- M2 deselection purge, stale-completion discard, in-place force-rescan replacing only that app (covered **after** queue drain).
-- M3 first-scanned-wins dedup, cross-app removal, pruning.
-- M4 FDA owning-app-name snapshot + coordinator headline formatting; `AppStateTests.testFullDiskAccessRetryKeepsUninstallInTrashFlow` correctly migrated to `uninstall(appNames:)`.
+**Re-reviewed and verified by the Code Reviewer on 2026-09-21.**
 
-**Gaps (should be added with the F1 fix)**:
-1. **Force-rescan while the scan queue is active** (a queued or in-flight scan exists) — the exact F1 scenario; currently untested and failing by behavior.
-2. Deselecting the *currently scanning* app while other apps remain queued (queue must still drain via the stale completion — currently works by accident of `handleScanCompletion`'s guard-fail path, but is untested and undocumented).
-3. Adding an app mid-batch (progress counters desync — F2).
-4. `pruneMissingInstalledApps` with **two** missing apps (multi-removal iteration under Set mutation).
+- **F1–F5: APPROVED** — resolved and independently verified (including re-running the original failing reproductions).
+- **F6/F7: one focused remediation remains** — eliminate the 4 new compiler warnings at `AppState.swift:577/587` (preferred: option 1 or 2 in §3) with a clean-build confirmation (warnings must return to ≤ 277, i.e., no diff-attributable warnings).
 
-Minor note: tests write directly to `discoveredFilesByApp`/`selectedFiles` (`testRemovingFilesAcrossApps…`, `testPruning…`) — acceptable for exercising removal/prune in isolation, but a slightly stronger test would drive them through the scanner seam.
-
----
-
-## 8. Recommended Fix List (priority order)
-
-1. **P1 — F1**: Make `scanForAppFiles` queue-cooperative (or guarded) per §4. `isScanningAppFiles`/`scansCompleted`/`scansTotal` must remain consistent whenever a force-rescan happens mid-batch; queued apps must always be scanned exactly once. Add the three missing tests from §7.
-2. **P2 — F2**: Make `scansCompleted/scansTotal` batch-relative so mid-batch additions don't produce "3 of 2" tickers.
-3. **P3 — F3**: Snapshot the `Set` before iterating/purging in `pruneMissingInstalledApps`.
-4. **P3 — F4**: Promote `selectedAppSnapshots` to `@Published` (or codify the paired-write invariant).
-5. **P3 — F5**: Refresh in-selection snapshots on `loadInstalledApps`-driven early-return.
-6. **P3 — F6**: Drop the redundant `DispatchQueue.main.async` logger hops.
-
-Addressing 2–6 can ride along with the F1 fix in a single follow-up commit; none block merge independently, but F1 does.
-
----
-
-## 9. Sign-off
-
-**Reviewed and verified by the Code Reviewer on 2026-09-21.**
-
-This document is deliberately **uncommitted** (per reviewer role constraints, the only file the reviewer writes is `docs/review.md`). Once the Developer resolves F1 (blocking) and the accompanying test gaps, I am prepared to re-review and approve. No application source files were modified during this review.
+The moment that 3-line fix lands with a warning-free clean build, I will issue **APPROVE**. No application source files were modified during this review; `docs/review.md` is left uncommitted per reviewer role constraints.
