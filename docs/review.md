@@ -1,10 +1,10 @@
-# Code Review — Multi-Select App Uninstaller (Final Review — APPROVED)
+# Code Review — Expert Mode Checkbox Multi-Selection for App Uninstaller (Final Review — APPROVED)
 
 - **Reviewer**: Code Reviewer (Maestri Engineering Team)
-- **Reviewed ref**: `feature/multi-select-uninstall` @ `ad56bcf` (fix(logging): restore main-actor hop around Logger.shared in background trasher)
-- **Prior reviews**: `43a9417` → REQUEST CHANGES (F1–F6) · `6559a69` → REQUEST CHANGES (narrow: F6 warning regression reopened as F7)
-- **Baseline**: `main`
-- **Spec**: `docs/adr-proposal.md` (ADR — Alternative 4, "Sequential Progressive + BundleID Indexing")
+- **Reviewed ref**: `feature/expert-mode-multi-select` @ `674be12a` (docs(uninstaller): document expert mode in README and improve test hygiene)
+- **Prior reviews**: `e758c31` → REQUEST CHANGES (narrow: F-EM-1 README deliverable; F-EM-4 test hygiene)
+- **Baseline**: `main` (`67bc3b6`, v3.1.0)
+- **Spec**: `docs/adr-proposal.md` (ADR v3.2.0 — "Expert Mode Checkbox Multi-Selection for App Uninstaller", Alternative 3)
 - **Review date**: 2026-09-21
 
 ---
@@ -14,78 +14,67 @@
 ```
 Verdict:          🟢 APPROVE
 Blocking issues:  0
-F1–F5:            ✅ Resolved & independently verified (queue-cooperative rescan, counters, prune, snapshots)
-F6 / F7:          ✅ Resolved — ad56bcf restores the main-actor hop around Logger.shared in the
-                    @Sendable background trasher closure; warning regression eliminated
-Tests:            119/119 pass, 0 failures
-Warnings:         277 total (exactly the 43a9417 baseline); 0 diff-attributable warnings in changed files
+F-EM-1:           ✅ Resolved — README.md App Uninstaller section documents Expert Mode
+F-EM-4:           ✅ Resolved — persistence tests save/restore prior UserDefaults values in defer
+F-EM-2/3/5/6/7:   ✅ Non-blocking observations; no action required for merge (tracked in §3 history)
+Tests:            125/125 pass, 0 failures
+Warnings:         277 total (exact baseline); 0 diff-attributable warnings in changed files
 ```
 
-All findings from both prior reviews are resolved. The feature branch meets the acceptance criteria: warning-free relative to baseline, full test suite green, ADR conformance verified, security invariants intact. **APPROVE** — ready to merge into `main`.
+All findings from the prior review cycle are resolved or explicitly accepted as non-blocking. The feature branch meets every acceptance criterion: state/persistence/helpers verified by tests, AppListView semantics per ADR §2.3, SettingsView integration wired, 11-locale parity enforced, and clean compilation with zero diff-attributable warnings on macOS 13.0+. **APPROVE** — ready to merge into `main` for v3.2.0.
 
 ---
 
-## 1. Final Configuration Checks (ad56bcf)
+## 1. Remediation Verification (commit `674be12a`)
 
-| Check | Result | Evidence |
+| Finding | Remediation | Verified |
 |---|---|---|
-| **Compile — clean build** | ✅ | `xcodebuild build` clean: **277 warning-lines** — identical to the `43a9417` baseline (and below `main`'s 284). |
-| **Warnings in changed files** | ✅ **0 new** | Only the 2 pre-existing diagnostics remain (`AppState.swift:784` `ignoredOrphansKey`, `:1146` `#ImplicitStrongCapture`) — both in code untouched by any commit in this feature branch. |
-| **F7 regression gone** | ✅ | Zero `Sendable closure` warnings in the clean build; `AppState.swift:577/587` log sites wrapped in `DispatchQueue.main.async` again (the warning-suppressive form). |
-| **Tests** | ✅ | `xcodebuild test` → **119/119 passed, 0 failures** (includes the 17 multi-uninstall tests: 12 original + 5 regression tests added in `6559a69`). |
-| **Scope of ad56bcf** | ✅ | Touches only the two `Logger.shared.log` statements in `defaultAppFileTrasher` (logging path; trashing semantics untouched — the log statements are fire-and-forget and do not affect `removed`/`failed` bookkeeping). |
-| **State machine** | ✅ | No changes to `scanForAppFiles`/`scanQueue`/selection logic in this commit; all F1–F5 behavior verified in the `6559a69` re-review (including independent reproductions of the two previously-failing F1 scenarios). |
+| **F-EM-1** (P2, blocking) — README M5 deliverable missing | `README.md` "App Uninstaller" section now documents the Expert Mode checklist toolbar toggle, its General Settings accessibility, checkbox column + additive row-click multi-selection, and the sub-header control bar with master Select/Deselect All + dynamic selection counter. | ✅ Accurate, descriptive, and consistent with the implemented behavior (checked against `AppListView.swift`). |
+| **F-EM-4** (P3) — persistence tests dropped preexisting defaults | All three persistence tests (`testExpertModeDefaultsToFalse`, `testTogglingExpertModePersistsToUserDefaults`, `testExpertModeInitializesFromStoredUserDefaults`) now snapshot `priorValue` and restore it in `defer` (re-set if it existed, `removeObject` if it did not). | ✅ Correct save/restore pattern; `object(forKey:)` round-trip preserves Bool semantics. No `UserDefaults` pollution of a developer's real preferences. |
+
+**Independent re-verification (this review):**
+```
+Clean build (rm -rf build-tests): 277 warning-lines — identical to main baseline.
+Changed files: 0 diff-attributable warnings (only pre-existing AppState.swift:784/:1146, untouched).
+xcodebuild test: ** TEST SUCCEEDED ** — Executed 125 tests, 0 failures.
+```
 
 ---
 
-## 2. Resolution Status — Complete Finding History
+## 2. Final Verification Matrix (unchanged from prior cycle, re-confirmed green)
 
-| # | Finding | Status | Notes |
+| Verification Point | Result | Summary |
+|---|---|---|
+| 1. AppState state mgmt, UserDefaults persistence, selection helpers + tests | ✅ | `@Published isExpertMode` + `didSet`→`UserDefaults`, init read-back, opt-in `false`; `toggleAppSelection`/`selectAllApps`/`deselectAllApps` (bundleID-dedup — safer than ADR pseudo-code); 6 M1/M2 tests. |
+| 2. AppListView toolbar toggle, sub-header bar, checkbox column, additive row-click | ✅ | Toolbar `Toggle` (checklist icon/help/a11y); master-toggle bar + `"%lld of %lld apps selected"` badge; conditional 24–32pt checkbox column; `.id()` layout-pass invariant; `.onChange(of: selection)` additive guard — 6 interaction scenarios traced, no accidental deselection, no feedback loops. |
+| 3. SettingsView integration | ✅ | `GeneralSettingsView` Toggle bound to `$appState.isExpertMode`; `.environmentObject(appState)` confirmed injected in the `Settings` scene (`PureMacApp.swift:131`). |
+| 4. Localization parity (11 locales) | ✅ | 3 keys × 11 locales, real translations, `%lld` signatures preserved; `LocalizationFilesTests` (parity/specifiers/duplicates) green. |
+| 5. Clean build, 0 new warnings, macOS 13.0+ | ✅ | 277 = baseline; 0 diff warnings; deployment target 13.0, APIs compatible. |
+
+---
+
+## 3. Historical Finding Register (for reference)
+
+| # | Severity | Status | Note |
 |---|---|---|---|
-| **F1** (P1) | `scanForAppFiles` bypassed the sequential queue → concurrent scans, premature `isScanningAppFiles=false`, silent queue stall | ✅ Resolved (`6559a69`) | Queue-cooperative: prepend + generation invalidation + `startNextScan()`; independently re-verified with prior repro harnesses (no concurrent scan; drains 3/3, 2/2). |
-| **F2** (P2) | Progress counters desynced on mid-batch additions | ✅ Resolved (`6559a69`) | In-flight accounting + `min()` clamp + sector-aware `dropApp` decrement; tested. |
-| **F3** (P3) | Set mutation during enumeration in `pruneMissingInstalledApps` | ✅ Resolved (`6559a69`) | `Array(selectedAppBundleIDs)` snapshot; multi-prune test added. |
-| **F4** (P3) | `selectedAppSnapshots` not `@Published` | ✅ Resolved (`6559a69`) | Now `@Published private(set)`. |
-| **F5** (P3) | Stale snapshots after Refresh | ✅ Resolved (`6559a69`) | Early-return branch refreshes snapshots + `selectedApp`; tested. |
-| **F6** (P3) | "Redundant" logger hops (review-1 read; superseded) | ✅ Resolved (`ad56bcf`) | Review-1 analysis was incomplete — the hops suppressed an actor-isolation warning; restored. |
-| **F7** (P2) | F6's removal introduced 4 "Sendable closure" warnings at `AppState.swift:577/587` | ✅ Resolved (`ad56bcf`) | Main-actor hop restored around both `Logger.shared` calls; clean build back to 277 (0 diff warnings). |
+| F-EM-1 | P2 | ✅ Resolved (`674be12a`) | README Expert Mode documentation. |
+| F-EM-2 | P3 | Accepted (optional) | Row-checkbox a11y label `"Select \(app.appName)"` unlocalized — recommended future localization (`"Select %@"` × 11). Non-blocking. |
+| F-EM-3 | P3 | Accepted (optional) | Checkbox column header is `TableColumn("")` vs ADR's `checkmark.square` glyph — cosmetic. |
+| F-EM-4 | P3 | ✅ Resolved (`674be12a`) | UserDefaults save/restore in persistence tests. |
+| F-EM-5 | P3 | Accepted — pre-release gate | View-layer checkbox/row-click interplay has no automated test (repo convention); ADR §6.2 manual gates 3 & 4 must be executed on the real app before release and results recorded (esp. confirming no checkbox→row double-toggle). |
+| F-EM-6 | P3 | Accepted (by design) | Row-click toggles a checked app OFF on focus — spec-conformant per ADR §2.3; confirm UX intent in manual gate 4. |
+| F-EM-7 | P3 | Accepted | Duplicated `Table` bodies (if/else) — justified by macOS 13 column-insertion artifacts + `.id()`; maintainability note for future edits. |
 
 ---
 
-## 3. Verification Summary (Final)
-
-```
-xcodegen generate
-xcodebuild -project PureMac.xcodeproj -scheme PureMac -configuration Debug \
-  -destination 'platform=macOS' -derivedDataPath build-tests CODE_SIGNING_ALLOWED=NO test
-  → ** TEST SUCCEEDED ** — Executed 119 tests, 0 failures  (incremental + clean builds both green)
-
-Clean-build warning deltas across the review cycle (same command, clean derived data):
-  main (baseline):  284   |   43a9417: 277   |   6559a69: 285 (F7 regression: +8)
-                                                       |   ad56bcf: 277 (✅ back to baseline)
-
-Diff-attributable warnings in changed files: 0 (feature vs main; only pre-existing diagnostics remain)
-```
-
----
-
-## 4. Remaining Observations / Follow-ups (non-blocking)
-
-1. **Swift 6 migration debt (pre-existing)**: the 277 baseline warnings are almost entirely `main actor-isolated static property 'shared'` / `#ImplicitStrongCapture` diagnostics in `ScanEngine`, `CleaningEngine`, and long-standing `AppState` code. They become hard errors under the Swift 6 language mode. Out of scope for this feature; recommend a dedicated follow-up ADR + sweep.
-2. **Cosmetic ticker dip**: when apps are added mid-batch, the "Scanning N of M" count can restart lower (e.g., "1 of 3" during the second app) before converging to `M/M`. Bounded, self-correcting, documented in the F2 resolution; no action required for merge.
-3. **Process note**: review artifacts (`docs/review.md`) were committed by the developer in `6559a69`. Review files are best left uncommitted (per reviewer role constraints); not a blocker — just a convention note for future cycles.
-
----
-
-## 5. Sign-off
+## 4. Sign-off
 
 **Final review completed by the Code Reviewer on 2026-09-21.**
 
-The Multi-Select App Uninstaller (`feature/multi-select-uninstall` @ `ad56bcf`) is **APPROVED** for merge into `main`:
+The Expert Mode Checkbox Multi-Selection feature (`feature/expert-mode-multi-select` @ `674be12a`) is **APPROVED** for merge into `main` (v3.2.0):
 
-- ADR Alternative 4 implemented faithfully: bundleID-keyed state, pure derived `discoveredFiles`, sequential progressive scanning with generation-token staleness guards, deterministic first-scanned-wins dedup, atomic deselection/reselection, unified batch removal, generalized multi-app FDA retry with frozen snapshots, and the row-trash selection-wipe bugfix.
-- All review findings F1–F7 resolved, verified by 119/119 passing tests (17 multi-uninstall) and independent reproduction harnesses.
-- Clean compilation: 0 diff-attributable compiler warnings, linter N/A (none configured).
-- Security invariants intact: high-risk dotpath guard, FDA boundary, admin escalation, all-11-locale parity, Reduce Motion compliance.
+- ADR Alternative 3 implemented faithfully: explicit Expert Mode toolbar toggle, checkbox column, additive row-click semantics with zero accidental batch loss, sub-header master Select/Deselect All + dynamic counter, UserDefaults persistence (default off), Settings parity, and 11-locale parity.
+- All review findings resolved or explicitly accepted as non-blocking; 125/125 tests pass; zero diff-attributable compiler warnings.
+- Pre-release reminder (non-blocking on merge): execute ADR §6.2 manual gates 3 & 4 on the real app and record results before shipping v3.2.0.
 
 No application source files were modified during this review; `docs/review.md` is left uncommitted per reviewer role constraints.
